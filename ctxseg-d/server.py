@@ -88,10 +88,10 @@ class CtxSegServicer(BiopbServicerBase):
         flow = flow / cnts
    
         mask = flow_to_mask(flow[..., :2])
-        mask = np.where(flow[...,-1] > 0.5, mask, 0).astype(np.uint16)
+        mask = np.where(flow[...,-1] >= 0, mask, 0)
         mask = clean_up_mask(remove_small_instances(mask, 100))
 
-        return mask
+        return mask.astype('uint16')
 
 
     def RunDetection(self, request, context):
@@ -128,7 +128,7 @@ class CtxSegServicer(BiopbServicerBase):
 
             else:
                 raise ValueError(f"Model does not support 3D input, got shape {image.shape}")
-                
+
             response = proto.ProcessResponse(
                 image_data = proto.ImageData(pixels = encode_image(mask)),
             )
