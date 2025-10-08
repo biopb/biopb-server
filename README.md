@@ -10,9 +10,9 @@ docker buildx build -t <image-name> .
 ```
 
 ### Pre-built public images
-  - jiyuuchc/cellpose
-  - jiyuuchc/lacss
-  - jiyuuchc/osilab
+  - [jiyuuchc/cellpose](https://hub.docker.com/r/jiyuuchc/cellpose)
+  - [jiyuuchc/lacss](https://hub.docker.com/r/jiyuuchc/cellpose-sam)
+  - [jiyuuchc/osilab](https://hub.docker.com/r/jiyuuchc/osilab)
 
 
 ### Run
