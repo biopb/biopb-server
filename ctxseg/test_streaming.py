@@ -39,32 +39,20 @@ def main(
     test_image = imageio.imread(image_path)
     logger.info(f"Loaded image {image_path} with shape {test_image.shape}")
 
-    def _test_with_image(image):
-        # test ObjectDetection service
-        logger.info("Testing ObjectDetection service...")
-        try:
-            with grpc.insecure_channel(SERVER) as channel:
-                stub = proto.ObjectDetectionStub(channel)
-                response = stub.RunDetection(proto.DetectionRequest(
-                    image_data=proto.ImageData(pixels=encode_image(image)),
-                    detection_settings=proto.DetectionSettings(),
-                ), metadata=METADATA)
-            print(f"ObjectDetection call responsed with {len(response.detections)} detections.")
+    def _messages(image, n = 4):
+        yield proto.ProcessRequest(
+            image_data=proto.ImageData(pixels=encode_image(image)),
+        )
+        for _ in range(n - 1):
+            yield proto.ImageData()
 
-        except grpc.RpcError as e:
-            logger.error(f"ObjectDetection call failed: {e}")
-            return
-        
-        logger.info("Testing ProcessImage service...")
+    def _test_with_image(image):
         try:
             with grpc.insecure_channel(SERVER) as channel:
                 stub = proto.ProcessImageStub(channel)
-                response = stub.Run(proto.ProcessRequest(
-                    image_data=proto.ImageData(pixels=encode_image(image)),
-                ), metadata=METADATA)
-
-            result = decode_image(response.image_data.pixels)
-            print(f"ProcessImage call responsed with {result.max()} detections.")
+                for response in stub.RunStream(_messages(image), metadata=METADATA):
+                    result = decode_image(response.image_data.pixels)
+                    print(f"ProcessImage call responsed with {result.max()} detections.")
 
         except grpc.RpcError as e:
             logger.error(f"ProcessImage call failed: {e}")

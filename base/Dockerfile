@@ -11,7 +11,7 @@ WORKDIR $HOME
 
 ENV PATH="$PATH:$HOME/.local/bin/"
 
-RUN pip install biopb==0.1.3
+RUN pip install biopb==0.1.4
 
 # copy rest of the code
 COPY --chown=biopb:biopb . .

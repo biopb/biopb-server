@@ -217,4 +217,5 @@ __marimo__/
 *.pth
 *.pt
 *.pickle
-
+*.pkl
+testing/
