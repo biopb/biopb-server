@@ -26,6 +26,8 @@ def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
     if isinstance(request, proto.DetectionRequest):
         settings = request.detection_settings
 
+        physical_size = pixels.physical_size_x or 1
+
         if settings.HasField("cell_diameter_hint"):
             diameter = settings.cell_diameter_hint / physical_size
         else:
