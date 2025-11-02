@@ -1,4 +1,5 @@
 import logging
+import math
 import random
 from concurrent import futures
 from pathlib import Path
@@ -15,7 +16,7 @@ from biopb.image.utils import roi_to_mask
 from skimage.measure import regionprops
 from ctxseg.modeling.diffusion import edm_precond
 from ctxseg.segmentation.flow import flow_to_mask
-from ctxseg.segmentation.utils import pad_channel, clean_up_mask, remove_small_instances
+from ctxseg.segmentation.utils import pad_channel, clean_up_mask
 from common import decode_image, encode_image, TokenValidationInterceptor, BiopbServicerBase
 
 app = typer.Typer(pretty_exceptions_enable=False)
@@ -86,9 +87,9 @@ def _predict(model, latent, sigma, *, GS=512, **kwargs):
     return flow
 
 
-def _draw_sample(model, image, conditional=None, *, steps=4):
-    sigma = 80
+def _draw_sample(model, image, conditional=None, *, steps=4, step_size=2, sigma=80):
     H, W = image.shape[:2]
+    r = 1 / step_size
 
     if conditional is not None:
         inpaint, inpaint_mask = conditional
@@ -102,11 +103,9 @@ def _draw_sample(model, image, conditional=None, *, steps=4):
     e_x = _predict(model, latent, sigma, conditional=conditional)
 
     for k in range(steps - 1):
-        sigma_next = sigma / 2
-        r = sigma_next / sigma
+        sigma = sigma * r
         latent = latent * r + (1-r) * e_x
-        e_x = _predict(model, latent, sigma)
-        sigma = sigma_next
+        e_x = _predict(model, latent, sigma, conditional=conditional)
     
     if conditional is not None:
         e_x = jnp.where(inpaint_mask[:, :, None], inpaint, e_x)
@@ -114,25 +113,38 @@ def _draw_sample(model, image, conditional=None, *, steps=4):
     return e_x
 
 
-def _to_detections(label, flow):
-    score = (flow ** 2).sum(axis=-1)
-    response = proto.DetectionResponse()
-    for rp in regionprops(label, score):
-        mask = rp.image.astype("uint8")
-        c, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        c = np.array(c[0], dtype=float).squeeze(1)
-        c = c + np.array([rp.bbox[1] , rp.bbox[0]])
-        c = c - 0.5
+def _to_detections(label, flow, detection_settings):
+    min_score = detection_settings.min_score
+    min_area = detection_settings.min_cell_area
 
-        scored_roi = proto.ScoredROI(
-            score = rp.mean_intensity,
-            roi = proto.ROI(
-                polygon = proto.Polygon(points = [proto.Point(x=p[0], y=p[1]) for p in c]),
-            )
-        )
-
-        response.detections.append(scored_roi)
+    scores = (flow ** 2).sum(axis=-1) # cell-score is RMS of flow amptitude
     
+    response = proto.DetectionResponse()
+    
+    for rp in regionprops(label, np.asarray(scores)):
+        score = min(math.sqrt(rp.mean_intensity), 1.0)
+
+        if rp.area > min_area and score > min_score:
+            mask = rp.image.astype("uint8")
+            # mask = np.where(rp.image_intensity > 0.1, mask, 0)
+
+            c, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            if len(c) == 0:
+                continue
+
+            c = np.array(c[0], dtype=float).squeeze(1)
+            c += np.array([rp.bbox[1] , rp.bbox[0]]) - .5
+
+            scored_roi = proto.ScoredROI(
+                score = score,
+                roi = proto.ROI(
+                    polygon = proto.Polygon(points = [proto.Point(x=p[0], y=p[1]) for p in c]),
+                )
+            )
+
+            response.detections.append(scored_roi)
+
     logger.debug(f"Found {len(response.detections)} detections")
 
     return response
@@ -150,10 +162,35 @@ def _segment_image(model, image):
 
     flow = _draw_sample(model, image, steps=1)
 
-    label = flow_to_mask(flow)
+    label = flow_to_mask(flow, threshold=0.0)
+
     label = clean_up_mask(label)
 
     return np.asarray(label), np.asarray(flow)
+
+
+def _get_mask(flow, *, score_threshold=0., flow_threshold=0.1, niter=500):
+    amp = (flow ** 2).sum(axis=-1)
+
+    flow = jnp.where(amp[...,None] > flow_threshold ** 2, flow, 0)
+
+    masks = flow_to_mask(flow, niter=niter)
+
+    if score_threshold > 0:
+        keep_labels = [
+            rp.label 
+            for rp in regionprops(masks, amp)
+            if rp.intensity_mean >= score_threshold
+        ]
+
+        lut = np.zeros(masks.max()+1, dtype="uint16")
+        lut[keep_labels] = np.arange(len(keep_labels))
+
+        masks = lut[masks]
+    else:
+        masks = clean_up_mask(masks).astype('uint16')
+
+    return masks
 
 
 class CtxSegServicer(BiopbServicerBase):
@@ -178,9 +215,13 @@ class CtxSegServicer(BiopbServicerBase):
         with self._server_context(context):
             image = self._process_data(request.image_data.pixels)
 
-            label, flow = _segment_image(self.model, image)
+            self.model.set_image(_to_patches(image))
 
-            response = _to_detections(label, flow)
+            flow = _draw_sample(self.model, image)
+
+            label = _get_mask(flow)
+
+            response = _to_detections(label, flow, request.detection_settings)
 
             logger.info(f"Reply with message of size {response.ByteSize()}")
 
@@ -191,10 +232,12 @@ class CtxSegServicer(BiopbServicerBase):
         with self._server_context(context):
             image = self._process_data(request.image_data.pixels)
 
-            label, flow = _segment_image(self.model, image)
+            self.model.set_image(_to_patches(image))
+
+            flow = _draw_sample(self.model, image)
 
             response = proto.ProcessResponse(
-                image_data = proto.ImageData(pixels = encode_image(label.astype('uint16'))),
+                image_data = proto.ImageData(pixels = encode_image(flow)),
             )
 
             logger.info(f"Reply with message of size {response.ByteSize()}")
@@ -223,12 +266,8 @@ class CtxSegServicer(BiopbServicerBase):
 
                 flow = _draw_sample(self.model, image, conditional=conditional)
 
-                label = flow_to_mask(flow)
-
-                label = np.array(clean_up_mask(label), dtype='uint16')
-
                 response = proto.ProcessResponse(
-                    image_data = proto.ImageData(pixels = encode_image(label)),
+                    image_data = proto.ImageData(pixels = encode_image(flow)),
                 )
 
                 yield response
