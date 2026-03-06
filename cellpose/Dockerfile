@@ -16,6 +16,8 @@ RUN python -c 'from cellpose import models; models.Cellpose("cyto3")'
 # copy rest of the code
 COPY . .
 
+RUN chmod 777 -R .
+
 EXPOSE 50051
 
 ENTRYPOINT ["python", "./cellpose_server.py"]
