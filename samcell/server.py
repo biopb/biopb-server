@@ -66,7 +66,7 @@ class SamcellServicer(BiopbServicerBase):
 
     def __init__(self, model_path):
         super().__init__()
-        model = FinetunedSAM('facebook/sam-vit-large', finetune_vision=False, finetune_prompt=True, finetune_decoder=True)
+        model = FinetunedSAM('facebook/sam-vit-base', finetune_vision=False, finetune_prompt=True, finetune_decoder=True)
         model.load_weights(model_path)
         self.pipeline = SlidingWindowPipeline(model, 'cuda', crop_size=256)
 
