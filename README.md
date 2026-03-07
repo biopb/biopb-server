@@ -13,7 +13,6 @@ docker buildx build -t <image-name> .
   - jiyuuchc/cellpose: [Cellpose Cyto3](https://cellpose.com)
   - jiyuuchc/cellpose-sam: [Cellpose-SAM](https://cellpose.com)
   - jiyuuchc/lacss: [Lacss3-base](https://github.com/jiyuuchc/lacss)
-  - jiyuuchc/osilab: Segformer model from NIPS challenge
   - jiyuuchc/samcell: [Finetuned SAM model](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0319532)
 
 ### Run

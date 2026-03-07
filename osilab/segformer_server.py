@@ -60,7 +60,7 @@ class SegformerServicer(BiopbServicerBase):
         self.model_path = model_path
         self.model_path2 = model_path2
         self.device = "cuda:0" if gpu else "cpu"
-        self.model = torch.load(model_path, map_location=self.device)
+        self.model = torch.load(model_path, map_location=self.device).eval()
         self.model2 = torch.load(model_path2, map_location=self.device)
 
     # def predict(self, img_data):
@@ -215,13 +215,11 @@ class SegformerServicer(BiopbServicerBase):
 
     def predict(self, img_data):
         model = self.model
-        model.eval()
-
         hflip_tta = HorizontalFlip()
         vflip_tta = VerticalFlip()
 
         H, W = img_data.shape[:2]
-        img_data = self._format_image(img_data)
+        img_data = self._format_image(img_data).to(self.device)
 
         img_size = img_data.shape[-1] * img_data.shape[-2]
 
@@ -240,12 +238,12 @@ class SegformerServicer(BiopbServicerBase):
                 padding_mode="reflect",
                 mode="gaussian",
                 overlap=overlap,
-                device="cpu",
+                device=self.device,
             )
             outputs0 = outputs0.cpu().squeeze()
 
-            # model.load_state_dict(self.model2)
-            # model.eval()
+            model.load_state_dict(self.model2)
+            model.eval()
             img2 = hflip_tta.apply_aug_image(img_data, apply=True)
             outputs2 = sliding_window_inference(
                 img2,
@@ -255,7 +253,7 @@ class SegformerServicer(BiopbServicerBase):
                 padding_mode="reflect",
                 mode="gaussian",
                 overlap=overlap,
-                device="cpu",
+                device=self.device,
             )
             outputs2 = hflip_tta.apply_deaug_mask(outputs2, apply=True)
             outputs2 = outputs2.cpu().squeeze()
