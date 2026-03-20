@@ -7,7 +7,6 @@ einops==0.8.1
 etils==1.13.0
 flax==0.10.7
 fsspec==2025.9.0
-grpcio==1.75.1
 humanize==4.13.0
 imageio==2.37.0
 importlib_resources==6.5.2

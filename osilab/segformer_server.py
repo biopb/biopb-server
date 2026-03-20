@@ -1,21 +1,17 @@
 import logging
-import threading
-from concurrent import futures
 from pathlib import Path
 
-import grpc
 import numpy as np
 import torch
 import typer
 
 import biopb.image as proto
-from common import decode_image, encode_image, TokenValidationInterceptor, BiopbServicerBase
+from common import decode_image, encode_image, BiopbServicerBase, setup_logging
 from predict import *
 from predict import _normalize
+from server import run_server
 
 app = typer.Typer(pretty_exceptions_enable=False)
-
-_MAX_MSG_SIZE=1024*1024*128
 
 logger = logging.getLogger(__name__)
 
@@ -319,64 +315,26 @@ def main(
     workers: int = 10,
     ip: str = "0.0.0.0",
     local: bool = False,
-    token: bool|None = None,
+    token: bool | None = None,
     debug: bool = False,
+    json_logging: bool = False,
     compression: bool = True,
     gpu: bool = True,
-    model_path : Path = "./main_model.pt",
-    model_path2 : Path = "./sub_model.pth"
+    model_path: Path = Path("./main_model.pt"),
+    model_path2: Path = Path("./sub_model.pth"),
 ):
-    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
-    # logger.setLevel(logging.DEBUG if debug else logging.INFO)
+    setup_logging(debug=debug, json_format=json_logging)
 
-    print ("server starting ...")
-
-    # loader = importlib.machinery.SourceFileLoader('predict', str(predict_py_file))
-    # mod = types.ModuleType( loader.name )
-    # loader.exec_module(mod)
-
-    if token is None:
-        token = not local
-    if token:
-        import secrets
-
-        token_str = secrets.token_urlsafe(64)
-
-        print()
-        print("COPY THE TOKEN BELOW FOR ACCESS.")
-        print("=======================================================================")
-        print(f"{token_str}")
-        print("=======================================================================")
-        print()
-    else:
-        token_str = None
-
-    server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=workers),
-        compression=grpc.Compression.Gzip if compression else grpc.Compression.NoCompression,
-        interceptors=(TokenValidationInterceptor(token_str),),
-        options=(("grpc.max_receive_message_length", _MAX_MSG_SIZE),),
+    run_server(
+        SegformerServicer(gpu, model_path, model_path2),
+        port=port,
+        workers=workers,
+        ip=ip,
+        local=local,
+        token=token,
+        debug=debug,
+        compression=compression,
     )
-
-    servicer = SegformerServicer(gpu, model_path, model_path2)
-    proto.add_ObjectDetectionServicer_to_server(
-        servicer, server,
-    )
-    proto.add_ProcessImageServicer_to_server(
-        servicer, server,
-    )
-
-    if local:
-        server.add_secure_port(f"127.0.0.1:{port}", grpc.local_server_credentials())
-    else:
-        server.add_insecure_port(f"{ip}:{port}")
-
-    logger.info(f"segformer_server: listening on port {port}")
-
-    print ("server starting ... ready")
-
-    server.start()
-    server.wait_for_termination()
 
 
 if __name__ == "__main__":

@@ -2,13 +2,6 @@
 
 The folder contains code for building the docker images of biopb servers.
 
-### Build
-
-```
-cd <build-dir>
-docker buildx build -t <image-name> .
-```
-
 ### Pre-built public images
   - jiyuuchc/cellpose: [Cellpose Cyto3](https://cellpose.com)
   - jiyuuchc/cellpose-sam: [Cellpose-SAM](https://cellpose.com)

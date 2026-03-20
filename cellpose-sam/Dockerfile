@@ -1,27 +1,18 @@
-FROM python:3.10
-RUN useradd -m biopb
-ENV HOME=/home/biopb
+FROM jiyuuchc/biopb-base:0.2.1
 
-USER biopb
 WORKDIR $HOME
 
-ENV PATH="$PATH:$HOME/.local/bin/"
-
-COPY requirements.txt ./requirements.txt
-
+# Install Python dependencies
+COPY --chown=biopb:biopb requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# pull model data
+# Pull model data
 RUN python -c 'from cellpose import models; models.CellposeModel(gpu=True)'
 
-# copy rest of the code
+# Copy service code
 COPY --chown=biopb:biopb . .
-
-# change permission 
-RUN chmod 777 -R .
 
 EXPOSE 50051
 
 ENTRYPOINT ["python", "./cellpose_server.py"]
-
 CMD ["--no-token"]

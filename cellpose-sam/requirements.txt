@@ -1,11 +1,9 @@
-biopb==0.1.2
-cellpose @ git+https://www.github.com/mouseland/cellpose.git
+cellpose @ git+https://github.com/mouseland/cellpose@849ca11f17882219f9968217eab3f6b19e3ce8aa
 click==8.1.8
 fastremap==1.15.0
 filelock==3.16.1
 fill_voids==2.1.0
 fsspec==2025.2.0
-grpcio==1.67.1
 imagecodecs==2023.3.16
 imageio==2.35.1
 importlib_metadata==8.5.0
@@ -37,7 +35,6 @@ nvidia-nvtx-cu12==12.6.77
 opencv-python-headless==4.10.0.84
 packaging==24.2
 pillow==10.4.0
-protobuf==5.27.2
 Pygments==2.19.1
 PyWavelets==1.4.1
 rich==13.9.4

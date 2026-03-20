@@ -1,4 +1,3 @@
-from typing import Any
 from skimage.segmentation import watershed
 import math
 import torch
@@ -7,8 +6,6 @@ import numpy as np
 import cv2
 from transformers import SamProcessor
 from slidingWindow import SlidingWindowHelper
-from skimage import measure
-from tqdm import tqdm
 
 
 class SlidingWindowPipeline:

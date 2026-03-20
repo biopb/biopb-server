@@ -1,82 +1,74 @@
 name: Docker Build and Push
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
-      build_dir:
-        description: 'Specific build directory to build (optional, builds all if empty)'
-        required: false
+      services:
+        description: 'Services to build (comma-separated, e.g., "cellpose,lacss" or "all")'
+        required: true
+        default: 'all'
         type: string
+      push:
+        description: 'Push to registry'
+        required: true
+        default: true
+        type: boolean
 
 env:
   REGISTRY: docker.io
   IMAGE_PREFIX: jiyuuchc
 
 jobs:
-  detect-changes:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      build_dirs: ${{ steps.detect.outputs.build_dirs }}
+      build_dirs: ${{ steps.prepare.outputs.build_dirs }}
+      push: ${{ steps.prepare.outputs.push }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
-      - name: Detect changed build directories
-        id: detect
+      - name: Prepare build matrix
+        id: prepare
         run: |
-          # Get list of all build directories
-          ALL_DIRS=$(ls -1 */Dockerfile 2>/dev/null | cut -d'/' -f1 | sort -u | jq -R . | jq -s .)
-          
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            # For PR, just list all dirs for validation
-            echo "build_dirs=$ALL_DIRS" >> $GITHUB_OUTPUT
-          elif [ -n "${{ github.event.inputs.build_dir }}" ]; then
-            # Manual dispatch with specific directory
-            DIR="${{ github.event.inputs.build_dir }}"
-            if [ -f "$DIR/Dockerfile" ]; then
-              echo "build_dirs=[\"$DIR\"]" >> $GITHUB_OUTPUT
-            else
-              echo "Error: Directory $DIR not found" >&2
-              exit 1
-            fi
+          # Discover all services with Dockerfiles
+          ALL_DIRS=$(ls -1 */Dockerfile 2>/dev/null | cut -d'/' -f1 | sort -u)
+
+          INPUT="${{ inputs.services }}"
+          PUSH="${{ inputs.push }}"
+
+          if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
+            # Build all services
+            BUILD_DIRS=$(echo "$ALL_DIRS" | jq -R . | jq -s .)
           else
-            # For push to main, detect changed directories
-            if [ "${{ github.event_name }}" = "push" ]; then
-              CHANGED_DIRS=$(git diff --name-only HEAD~1 HEAD | grep '/Dockerfile$' | cut -d'/' -f1 | sort -u)
-              VERSION_CHANGES=$(git diff --name-only HEAD~1 HEAD | grep '/VERSION$' | cut -d'/' -f1 | sort -u)
-              
-              # Combine and deduplicate
-              ALL_CHANGES=$(echo -e "$CHANGED_DIRS\n$VERSION_CHANGES" | sort -u | grep -v '^$' | jq -R . | jq -s .)
-              
-              if [ -n "$ALL_CHANGES" ]; then
-                echo "build_dirs=$ALL_CHANGES" >> $GITHUB_OUTPUT
+            # Build specified services (comma-separated)
+            BUILD_DIRS=$(echo "$INPUT" | tr ',' '\n' | while read dir; do
+              dir=$(echo "$dir" | tr -d ' ')
+              if [ -f "$dir/Dockerfile" ]; then
+                echo "\"$dir\""
               else
-                # Check for common file changes in any directory
-                COMMON_CHANGES=$(git diff --name-only HEAD~1 HEAD | grep -E '^(base|cellpose|cellpose-sam|ctxseg|ctxseg-d|lacss|osilab|samcell)/' | cut -d'/' -f1 | sort -u | jq -R . | jq -s .)
-                echo "build_dirs=$COMMON_CHANGES" >> $GITHUB_OUTPUT
+                echo "Warning: $dir/Dockerfile not found, skipping" >&2
               fi
-            else
-              echo "build_dirs=$ALL_DIRS" >> $GITHUB_OUTPUT
-            fi
+            done | jq -s .)
           fi
 
+          echo "build_dirs=$BUILD_DIRS" >> $GITHUB_OUTPUT
+          echo "push=$PUSH" >> $GITHUB_OUTPUT
+          echo "Building: $BUILD_DIRS"
+
+      - name: Build summary
+        run: |
+          echo "## Build Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Services**: ${{ inputs.services }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Push to registry**: ${{ inputs.push }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build matrix**: ${{ steps.prepare.outputs.build_dirs }}" >> $GITHUB_STEP_SUMMARY
+
   build-and-push:
-    needs: detect-changes
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        build_dir: ${{ fromJson(needs.detect-changes.outputs.build_dirs) }}
+        build_dir: ${{ fromJson(needs.prepare.outputs.build_dirs) }}
       fail-fast: false
 
     steps:
@@ -97,7 +89,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
+        if: needs.prepare.outputs.push == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -109,16 +101,15 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.build_dir }}
           tags: |
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.event_name != 'pull_request' }}
-            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
-            type=sha,prefix=,format=short,enable=${{ github.event_name != 'pull_request' }}
-            type=sha,prefix=,format=short,enable=${{ github.event_name == 'pull_request' }},suffix=-pr
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ needs.prepare.outputs.push == 'true' }}
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.push == 'true' }}
+            type=sha,prefix=,format=short
 
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.build_dir }}
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ needs.prepare.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -130,8 +121,8 @@ jobs:
       - name: Build summary
         if: always()
         run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Result" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.build_dir }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pushed**: ${{ needs.prepare.outputs.push }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Git SHA**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

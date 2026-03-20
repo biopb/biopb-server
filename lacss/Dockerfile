@@ -1,30 +1,35 @@
-FROM python:3.10
+FROM jiyuuchc/biopb-base:0.2.1
 
-RUN useradd -m biopb
-ENV HOME=/home/biopb
-
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libx11-6 \
+    libxrender1 \
+    libxtst6 \
+    && rm -rf /var/lib/apt/lists/*
 USER biopb
+
 WORKDIR $HOME
 
-ENV PATH="$PATH:$HOME/.local/bin/"
+# Download model
+RUN wget -q https://huggingface.co/jiyuuchc/lacss3/resolve/main/lacss3-base.pkl -O lacss3-base.pkl
 
-RUN wget https://huggingface.co/jiyuuchc/lacss3-base/resolve/main/lacss3-base?download=true -O lacss3-base
-
+# Create JAX cache directory
 RUN mkdir jax_cache
 
-# copy rest of the code
-COPY . .
+# Copy service code
+COPY --chown=biopb:biopb . .
 
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install lacss with specific version
 ARG VERSION=0.15.2
 RUN pip install --no-cache-dir --no-deps lacss==$VERSION
-
-EXPOSE 50051
 
 ENV JAX_COMPILATION_CACHE_DIR="./jax_cache"
 ENV XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-ENTRYPOINT ["python", "-m", "lacss.deploy.remote_server"]
+EXPOSE 50051
 
-CMD ["--no-token", "--f16", "--modelpath", "./lacss3-base"]
+ENTRYPOINT ["python", "./lacss_server.py"]
+CMD ["--no-token", "--f16", "--modelpath", "./lacss3-base.pkl"]

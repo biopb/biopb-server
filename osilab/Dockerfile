@@ -1,16 +1,13 @@
-FROM python:3.10
-RUN useradd -m biopb
-ENV HOME=/home/biopb
-USER biopb
+FROM jiyuuchc/biopb-base:0.2.1
+
 WORKDIR $HOME
 
-ENV PATH="$PATH:$HOME/.local/bin/"
-
-COPY requirements.txt ./requirements.txt
+# Install Python dependencies
+COPY --chown=biopb:biopb requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# copy rest of the code
-COPY . .
+# Copy service code (includes model files)
+COPY --chown=biopb:biopb . .
 
 EXPOSE 50051
 

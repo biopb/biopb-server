@@ -1,13 +1,10 @@
 import logging
 import math
 import random
-from concurrent import futures
 from pathlib import Path
-from typing import Optional
 
 import biopb.image as proto
 import cv2
-import grpc
 import jax
 import numpy as np
 import typer
@@ -17,7 +14,8 @@ from skimage.measure import regionprops
 from ctxseg.modeling.diffusion import edm_precond
 from ctxseg.segmentation.flow import flow_to_mask
 from ctxseg.segmentation.utils import pad_channel, clean_up_mask
-from common import decode_image, encode_image, TokenValidationInterceptor, BiopbServicerBase
+from common import decode_image, encode_image, BiopbServicerBase, setup_logging
+from server import run_server
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -26,8 +24,6 @@ logger = logging.getLogger(__name__)
 jnp = jax.numpy
 
 rngs = nnx.Rngs(random.randint(0,10000))
-
-_MAX_MSG_SIZE=1024*1024*128
 
 def _to_patches(image, GS=512):
     overlap = GS // 8
@@ -293,57 +289,26 @@ def main(
     workers: int = 10,
     ip: str = "0.0.0.0",
     local: bool = False,
-    token: Optional[bool] = None,
+    token: bool | None = None,
     debug: bool = False,
+    json_logging: bool = False,
     compression: bool = True,
 ):
-    print ("server starting ...")
-
-    logger.setLevel(logging.DEBUG if debug else logging.INFO)
+    setup_logging(debug=debug, json_format=json_logging)
 
     model = load_model(modelpath)
 
-    if token is None:
-        token = not local
-    if token:
-        import secrets
-
-        token_str = secrets.token_urlsafe(64)
-
-        print()
-        print("COPY THE TOKEN BELOW FOR ACCESS.")
-        print("=======================================================================")
-        print(f"{token_str}")
-        print("=======================================================================")
-        print()
-    else:
-        token_str = None
-
-    server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=workers),
-        compression=grpc.Compression.Gzip if compression else grpc.Compression.NoCompression,
-        interceptors=(TokenValidationInterceptor(token_str),),
-        options=(("grpc.max_receive_message_length", _MAX_MSG_SIZE),),
+    run_server(
+        CtxSegServicer(model),
+        port=port,
+        workers=workers,
+        ip=ip,
+        local=local,
+        token=token,
+        debug=debug,
+        compression=compression,
     )
-
-    servicer = CtxSegServicer(model)
-    proto.add_ObjectDetectionServicer_to_server(servicer, server)
-    proto.add_ProcessImageServicer_to_server(servicer, server)
-
-    if local:
-        server.add_secure_port(f"127.0.0.1:{port}", grpc.local_server_credentials())
-    else:
-        server.add_insecure_port(f"{ip}:{port}")
-
-    logger.info(f"ctxseg_server: listening on port {port}")
-
-    print ("server starting ... ready")
-
-    server.start()
-
-    server.wait_for_termination()
 
 
 if __name__ == "__main__":
-    logging.basicConfig()
     app()

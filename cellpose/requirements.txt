@@ -1,10 +1,8 @@
-biopb==0.1.2
 cellpose==3.1.0
 click==8.1.8
 fastremap==1.15.0
 filelock==3.16.1
 fsspec==2025.2.0
-grpcio==1.67.1
 imagecodecs==2023.3.16
 imageio==2.35.1
 importlib_metadata==8.5.0
@@ -34,7 +32,6 @@ nvidia-nvtx-cu12==12.1.105
 opencv-python-headless==4.10.0.84
 packaging==24.2
 pillow==10.4.0
-protobuf==5.28.3
 Pygments==2.19.1
 PyWavelets==1.4.1
 rich==13.9.4

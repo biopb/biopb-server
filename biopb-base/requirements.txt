@@ -1,0 +1,4 @@
+biopb==0.2.0
+grpcio-health-checking
+imageio
+typer
