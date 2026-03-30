@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from contextlib import contextmanager
 from typing import Optional
 
@@ -348,20 +349,20 @@ class BiopbServicerBase(proto.ObjectDetectionServicer, proto.ProcessImageService
     Base class for biopb servicers with error handling and logging.
 
     Provides:
-    - Thread-safe request handling via lock
-    - Error handling with proper gRPC status codes
-    - Request logging context
+    - Optional thread-safe request handling via lock
+    - Error handling with proper gRPC status codes and correlation IDs
+    - Full traceback logging for all errors
 
     Subclasses should implement RunDetection and Run methods.
+
+    Args:
+        use_lock: If True, serialize requests with a lock. Default True for
+            backwards compatibility. Set False for thread-safe models.
     """
 
-    def __init__(self):
-        self._lock = threading.RLock()
-        self._debug = False
-
-    def set_debug(self, debug: bool):
-        """Enable or disable debug mode."""
-        self._debug = debug
+    def __init__(self, use_lock: bool = True):
+        self._lock = threading.RLock() if use_lock else None
+        self._use_lock = use_lock
 
     @contextmanager
     def _server_context(self, context):
@@ -375,25 +376,57 @@ class BiopbServicerBase(proto.ObjectDetectionServicer, proto.ProcessImageService
                     return response
         """
         try:
-            with self._lock:
+            if self._use_lock:
+                with self._lock:
+                    yield
+            else:
                 yield
 
+        # Let gRPC abort exceptions propagate (avoid double-abort)
+        except grpc.RpcError:
+            raise
+
         except ValueError as e:
-            logger.error(f"Invalid argument: {e}")
-            if self._debug:
-                logger.error(traceback.format_exc())
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, repr(e))
+            error_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{error_id}] Invalid argument: {e}")
+            logger.error(f"[{error_id}] Traceback:\n{traceback.format_exc()}")
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"{repr(e)} (error_id: {error_id})",
+            )
 
         except NotImplementedError as e:
-            logger.error(f"Not implemented: {e}")
-            context.abort(grpc.StatusCode.UNIMPLEMENTED, repr(e))
+            error_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{error_id}] Not implemented: {e}")
+            logger.error(f"[{error_id}] Traceback:\n{traceback.format_exc()}")
+            context.abort(
+                grpc.StatusCode.UNIMPLEMENTED,
+                f"{repr(e)} (error_id: {error_id})",
+            )
 
         except Exception as e:
-            logger.error(f"Prediction failed: {e}")
-            logger.error(traceback.format_exc())
+            error_id = uuid.uuid4().hex[:8]
+            logger.error(f"[{error_id}] Prediction failed: {e}")
+            logger.error(f"[{error_id}] Traceback:\n{traceback.format_exc()}")
+
+            # Check for CUDA errors and log helpful message
+            error_str = str(e).lower()
+            if "cuda" in error_str or "gpu" in error_str:
+                if "out of memory" in error_str:
+                    logger.warning(
+                        f"[{error_id}] CUDA out of memory error. Consider: "
+                        "1) reducing image size, 2) clearing GPU cache, "
+                        "3) using smaller batch sizes"
+                    )
+                elif "device" in error_str or "illegal" in error_str:
+                    logger.warning(
+                        f"[{error_id}] CUDA device error detected. GPU state may be corrupted. "
+                        "Service restart may be required."
+                    )
+
             context.abort(
                 grpc.StatusCode.INTERNAL,
-                f"Prediction failed with error: {repr(e)}",
+                f"Prediction failed with error: {repr(e)} (error_id: {error_id})",
             )
 
     def RunDetectionStream(self, request_iterator, context):
