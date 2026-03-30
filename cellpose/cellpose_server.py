@@ -5,7 +5,7 @@ import numpy as np
 import typer
 
 from cellpose import models
-from common import decode_image, encode_image, BiopbServicerBase, setup_logging
+from common import decode_image, encode_image, BiopbServicerBase, setup_logging, parse_kwargs, validate_kwargs
 from server import run_server
 
 app = typer.Typer(pretty_exceptions_enable=False)
@@ -13,6 +13,58 @@ app = typer.Typer(pretty_exceptions_enable=False)
 logger = logging.getLogger(__name__)
 
 _TARGET_CELL_SIZE=30
+
+# Default kwargs for cellpose model
+_DEFAULT_KWARGS = {
+    "channels": [0, 0],
+    "diameter": 30.0,
+    "flow_threshold": 0.4,
+    "cellprob_threshold": 0.0,
+    "normalize": True,
+    "invert": False,
+    "min_size": 15,
+}
+
+# Validation schema for cellpose kwargs
+_CELLPOSE_kwargs_SCHEMA = {
+    "channels": {
+        "type": "array",
+        "item_type": "int",
+        "min_length": 2,
+        "max_length": 2,
+        "description": "Channel specification [cytoplasm, nucleus]",
+    },
+    "diameter": {
+        "type": "number",
+        "minimum": 0,
+        "description": "Cell diameter in pixels",
+    },
+    "flow_threshold": {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "description": "Flow error threshold",
+    },
+    "cellprob_threshold": {
+        "type": "number",
+        "minimum": -6.0,
+        "maximum": 6.0,
+        "description": "Cell probability threshold",
+    },
+    "normalize": {
+        "type": "bool",
+        "description": "Normalize image intensities",
+    },
+    "invert": {
+        "type": "bool",
+        "description": "Invert image pixel intensity",
+    },
+    "min_size": {
+        "type": "int",
+        "minimum": 0,
+        "description": "Minimum cell size",
+    },
+}
 
 
 def process_input(request: proto.DetectionRequest):
@@ -23,24 +75,31 @@ def process_input(request: proto.DetectionRequest):
 
     physical_size = pixels.physical_size_x or 1
 
-    if settings.HasField("cell_diameter_hint"):
-        diameter = settings.cell_diameter_hint / physical_size
+    # Start with default kwargs
+    kwargs = _DEFAULT_KWARGS.copy()
 
+    # Override diameter from detection_settings if provided
+    if settings.HasField("cell_diameter_hint"):
+        kwargs["diameter"] = settings.cell_diameter_hint / physical_size
+    elif settings.scaling_hint:
+        kwargs["diameter"] = _TARGET_CELL_SIZE / (settings.scaling_hint or 1.0)
+
+    # Auto-detect channels if not specified in kwargs
+    if image.shape[-1] > 1:
+        kwargs["channels"] = [1, 2]
     else:
-        diameter = _TARGET_CELL_SIZE / (settings.scaling_hint or 1.0)
+        kwargs["channels"] = [0, 0]
+
+    # Merge with kwargs from request (if provided)
+    kwargs = parse_kwargs(request, kwargs)
+
+    # Validate kwargs
+    errors = validate_kwargs(kwargs, _CELLPOSE_kwargs_SCHEMA)
+    if errors:
+        raise ValueError("Invalid kwargs: " + "; ".join(errors))
 
     if image.shape[0] == 1: # 2D
         image = image.squeeze(0)
-
-    if image.shape[-1] > 1:
-        channels = [1, 2]
-    else:
-        channels = [0, 0]
-
-    kwargs = dict(
-        diameter = diameter,
-        channels = channels,
-    )
 
     return image, kwargs
 
@@ -110,20 +169,26 @@ class CellposeServicer(BiopbServicerBase):
             pixels = request.image_data.pixels
             image = decode_image(pixels)
 
-            if image.shape[-1] > 1:
-                channels = [1, 2]
-            else:
-                channels = [0, 0]
-
-            logger.info(f"Decoded image {image.shape}")
+            # Start with default kwargs
+            kwargs = _DEFAULT_KWARGS.copy()
 
             if image.shape[0] == 1: # 2D
                 image = image.squeeze(0)
-                mask = self.model.eval(image, channels = channels)[0]
-
             else:
-                mask = self.model.eval(image, channels = channels, do_3D=True)[0]
-                
+                kwargs["do_3D"] = True
+
+            # Merge with kwargs from request (if provided)
+            kwargs = parse_kwargs(request, kwargs)
+
+            # Validate kwargs
+            errors = validate_kwargs(kwargs, _CELLPOSE_kwargs_SCHEMA)
+            if errors:
+                raise ValueError("Invalid kwargs: " + "; ".join(errors))
+
+            logger.info(f"Decoded image {image.shape}")
+
+            mask = self.model.eval(image, **kwargs)[0]
+
             response = proto.ProcessResponse(
                 image_data = proto.ImageData(pixels = encode_image(mask)),
             )
@@ -131,6 +196,23 @@ class CellposeServicer(BiopbServicerBase):
             logger.info(f"Reply with message of size {response.ByteSize()}")
 
             return response
+
+    def GetOpNames(self, request, context):
+        """Return the available operations and their parameter schemas."""
+        from google.protobuf.struct_pb2 import Struct
+
+        default_kwargs = Struct()
+        default_kwargs.update(_DEFAULT_KWARGS)
+
+        schema = proto.OpSchema(
+            default_kwargs=default_kwargs,
+            description="Cellpose Cyto3 cell segmentation model",
+        )
+
+        op_names = proto.OpNames(names=["cellpose"])
+        op_names.op_schemas.get_or_create("cellpose").CopyFrom(schema)
+
+        return op_names
 
 
 @app.command()

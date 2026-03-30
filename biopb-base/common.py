@@ -21,6 +21,7 @@ import biopb.image as proto
 import grpc
 import numpy as np
 from biopb.image.utils import deserialize_to_numpy, serialize_from_numpy
+from google.protobuf.json_format import MessageToDict
 
 _AUTH_HEADER_KEY = "authorization"
 _MAX_MSG_SIZE = 1024 * 1024 * 128  # 128MB
@@ -178,6 +179,132 @@ def encode_image(image: np.ndarray, **kwargs) -> proto.Pixels:
         Protobuf Pixels message
     """
     return serialize_from_numpy(image, **kwargs)
+
+
+def parse_kwargs(request, defaults: dict) -> dict:
+    """
+    Merge request kwargs with defaults.
+
+    Args:
+        request: DetectionRequest or ProcessRequest with optional kwargs field
+        defaults: Dictionary of default parameter values
+
+    Returns:
+        Dictionary with defaults overridden by any kwargs from the request
+    """
+    kwargs = defaults.copy()
+    if request.HasField("kwargs"):
+        request_kwargs = MessageToDict(request.kwargs)
+        kwargs.update(request_kwargs)
+    return kwargs
+
+
+def _validate_type(key: str, value, expected_type: str, spec: dict) -> str | None:
+    """
+    Validate the type of a single value.
+
+    Args:
+        key: Parameter name (for error messages)
+        value: The value to validate
+        expected_type: Expected type string ("int", "number", "bool", "string", "array")
+        spec: Full spec dict (used for array item_type validation)
+
+    Returns:
+        Error message string if invalid, None if valid
+    """
+    if expected_type == "int":
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"Parameter '{key}' must be an integer, got {type(value).__name__}"
+
+    elif expected_type == "number":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return f"Parameter '{key}' must be a number, got {type(value).__name__}"
+
+    elif expected_type == "bool":
+        if not isinstance(value, bool):
+            return f"Parameter '{key}' must be a boolean, got {type(value).__name__}"
+
+    elif expected_type == "string":
+        if not isinstance(value, str):
+            return f"Parameter '{key}' must be a string, got {type(value).__name__}"
+
+    elif expected_type == "array":
+        if not isinstance(value, list):
+            return f"Parameter '{key}' must be an array, got {type(value).__name__}"
+
+        # Validate array items
+        item_type = spec.get("item_type")
+        if item_type:
+            for i, item in enumerate(value):
+                item_error = _validate_type(f"{key}[{i}]", item, item_type, {})
+                if item_error:
+                    return item_error
+
+    return None
+
+
+def validate_kwargs(kwargs: dict, schema: dict) -> list[str]:
+    """
+    Validate kwargs against a schema.
+
+    Args:
+        kwargs: Dictionary of parameter values to validate
+        schema: Schema dict defining valid parameters and their constraints
+
+    Returns:
+        List of error messages (empty if valid)
+
+    Schema format:
+        {
+            "param_name": {
+                "type": "int" | "number" | "bool" | "array" | "string",
+                "item_type": "int" | "number" | ... (for arrays),
+                "minimum": number (optional),
+                "maximum": number (optional),
+                "min_length": int (optional, for arrays),
+                "max_length": int (optional, for arrays),
+                "description": str (optional, for documentation),
+            },
+            ...
+        }
+    """
+    errors = []
+
+    # Check for unknown parameters
+    for key in kwargs:
+        if key not in schema:
+            valid_params = list(schema.keys())
+            errors.append(f"Unknown parameter '{key}'. Valid parameters: {valid_params}")
+
+    # Check each known parameter
+    for key, spec in schema.items():
+        if key not in kwargs:
+            continue
+
+        value = kwargs[key]
+        expected_type = spec.get("type")
+
+        # Type validation
+        type_error = _validate_type(key, value, expected_type, spec)
+        if type_error:
+            errors.append(type_error)
+            continue  # Skip range validation if type is wrong
+
+        # Range validation for numbers
+        if expected_type in ("number", "int"):
+            if "minimum" in spec and value < spec["minimum"]:
+                errors.append(f"Parameter '{key}' value {value} is below minimum {spec['minimum']}")
+            if "maximum" in spec and value > spec["maximum"]:
+                errors.append(f"Parameter '{key}' value {value} exceeds maximum {spec['maximum']}")
+
+        # Length validation for arrays
+        if expected_type == "array":
+            if "min_length" in spec and len(value) < spec["min_length"]:
+                errors.append(f"Parameter '{key}' must have at least {spec['min_length']} items")
+            if "max_length" in spec and len(value) > spec["max_length"]:
+                errors.append(f"Parameter '{key}' must have at most {spec['max_length']} items")
+
+    return errors
 
 
 # =============================================================================

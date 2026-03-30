@@ -57,10 +57,7 @@ build_service() {
     echo "  Image: $image_base"
 
     # Build tags (consistent with CI)
-    local tags="--tag $image_base:$sha"
-    if [ "$push" = "true" ]; then
-        tags="$tags --tag $image_base:$version --tag $image_base:latest"
-    fi
+    local tags="--tag $image_base:$sha --tag $image_base:$version --tag $image_base:latest"
 
     # Build args
     local build_args=""

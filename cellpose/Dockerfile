@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-base:0.2.1
+FROM jiyuuchc/biopb-base:0.2.2
 
 WORKDIR $HOME
 
