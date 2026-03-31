@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-base:0.2.3
+FROM jiyuuchc/biopb-base:0.2.4
 
 USER biopb
 

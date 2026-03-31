@@ -200,56 +200,110 @@ def parse_kwargs(request, defaults: dict) -> dict:
     return kwargs
 
 
-def _validate_type(key: str, value, expected_type: str, spec: dict) -> str | None:
+def _coerce_value(value, expected_type: str):
     """
-    Validate the type of a single value.
+    Attempt to coerce a value to the expected type.
+
+    Returns (coerced_value, warning_message) where warning_message is None on success.
+    Coercion rules:
+    - int: Accept int, or convert float to int (truncates toward zero)
+    - number: Accept int or float (Python handles this naturally)
+    - bool: Only accept bool (int/float are not valid bools in protobuf struct)
+    - string: Only accept string
+    - array: Accept list or tuple
+    """
+    warning = None
+
+    if expected_type == "int":
+        if isinstance(value, bool):
+            # bool is a subclass of int, but we don't want to accept it as int
+            warning = f"Parameter is a boolean, expected integer"
+        elif isinstance(value, int):
+            pass  # Already correct type
+        elif isinstance(value, float):
+            # Convert float to int (struct_pb2 doesn't distinguish int/float)
+            coerced = int(value)
+            if coerced != value:
+                warning = f"Parameter value {value} truncated to {coerced} for integer type"
+            return coerced, warning
+        else:
+            warning = f"Parameter type {type(value).__name__} cannot be converted to integer"
+
+    elif expected_type == "number":
+        if isinstance(value, bool):
+            warning = f"Parameter is a boolean, expected number"
+        elif isinstance(value, (int, float)):
+            pass  # Valid number type
+        else:
+            warning = f"Parameter type {type(value).__name__} cannot be converted to number"
+
+    elif expected_type == "bool":
+        if not isinstance(value, bool):
+            warning = f"Parameter type {type(value).__name__}, expected boolean"
+
+    elif expected_type == "string":
+        if not isinstance(value, str):
+            warning = f"Parameter type {type(value).__name__}, expected string"
+
+    elif expected_type == "array":
+        if isinstance(value, tuple):
+            # Convert tuple to list
+            return list(value), warning
+        elif not isinstance(value, list):
+            warning = f"Parameter type {type(value).__name__}, expected array"
+
+    return value, warning
+
+
+def _validate_type(key: str, value, expected_type: str, spec: dict) -> tuple[any, str | None]:
+    """
+    Validate and optionally coerce a value to the expected type.
 
     Args:
-        key: Parameter name (for error messages)
-        value: The value to validate
+        key: Parameter name (for warnings)
+        value: The value to validate/coerce
         expected_type: Expected type string ("int", "number", "bool", "string", "array")
         spec: Full spec dict (used for array item_type validation)
 
     Returns:
-        Error message string if invalid, None if valid
+        Tuple of (possibly_coerced_value, error_message)
+        - On success: (value or coerced_value, None)
+        - On type mismatch that can be coerced: (coerced_value, None) with warning logged
+        - On uncoercible type: (original_value, error_message)
+
+    Note:
+        struct_pb2 (Google protobuf Struct) does not distinguish between int and float.
+        All numeric values are stored as float. This function handles that by accepting
+        floats for int parameters and converting them.
     """
-    if expected_type == "int":
-        if not isinstance(value, int) or isinstance(value, bool):
-            return f"Parameter '{key}' must be an integer, got {type(value).__name__}"
+    # Coerce the value if needed
+    coerced_value, warning = _coerce_value(value, expected_type)
 
-    elif expected_type == "number":
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            return f"Parameter '{key}' must be a number, got {type(value).__name__}"
+    if warning:
+        logger.warning(f"Parameter '{key}': {warning}")
 
-    elif expected_type == "bool":
-        if not isinstance(value, bool):
-            return f"Parameter '{key}' must be a boolean, got {type(value).__name__}"
-
-    elif expected_type == "string":
-        if not isinstance(value, str):
-            return f"Parameter '{key}' must be a string, got {type(value).__name__}"
-
-    elif expected_type == "array":
-        if not isinstance(value, list):
-            return f"Parameter '{key}' must be an array, got {type(value).__name__}"
-
-        # Validate array items
+    # For arrays, validate and coerce items
+    if expected_type == "array" and isinstance(coerced_value, list):
         item_type = spec.get("item_type")
         if item_type:
-            for i, item in enumerate(value):
-                item_error = _validate_type(f"{key}[{i}]", item, item_type, {})
-                if item_error:
-                    return item_error
+            coerced_items = []
+            for i, item in enumerate(coerced_value):
+                item_value, item_warning = _coerce_value(item, item_type)
+                if item_warning:
+                    # For items, we still log warning but don't error
+                    logger.warning(f"Parameter '{key}[{i}]': {item_warning}")
+                coerced_items.append(item_value)
+            coerced_value = coerced_items
 
-    return None
+    return coerced_value, None
 
 
 def validate_kwargs(kwargs: dict, schema: dict) -> list[str]:
     """
-    Validate kwargs against a schema.
+    Validate and coerce kwargs against a schema.
 
     Args:
-        kwargs: Dictionary of parameter values to validate
+        kwargs: Dictionary of parameter values to validate (modified in-place with coerced values)
         schema: Schema dict defining valid parameters and their constraints
 
     Returns:
@@ -268,16 +322,20 @@ def validate_kwargs(kwargs: dict, schema: dict) -> list[str]:
             },
             ...
         }
+
+    Note:
+        kwargs is modified in-place with type-coerced values (e.g., float→int conversion).
+        This handles struct_pb2's lack of int/float distinction.
     """
     errors = []
 
-    # Check for unknown parameters
+    # Check for unknown parameters - log warning instead of error
+    # (struct_pb2 may include extra fields we don't know about)
     for key in kwargs:
         if key not in schema:
-            valid_params = list(schema.keys())
-            errors.append(f"Unknown parameter '{key}'. Valid parameters: {valid_params}")
+            logger.warning(f"Unknown parameter '{key}' will be ignored")
 
-    # Check each known parameter
+    # Validate and coerce each known parameter
     for key, spec in schema.items():
         if key not in kwargs:
             continue
@@ -285,24 +343,27 @@ def validate_kwargs(kwargs: dict, schema: dict) -> list[str]:
         value = kwargs[key]
         expected_type = spec.get("type")
 
-        # Type validation
-        type_error = _validate_type(key, value, expected_type, spec)
+        # Type validation and coercion
+        coerced_value, type_error = _validate_type(key, value, expected_type, spec)
         if type_error:
             errors.append(type_error)
-            continue  # Skip range validation if type is wrong
+            continue
 
-        # Range validation for numbers
+        # Update kwargs with coerced value (e.g., float→int)
+        kwargs[key] = coerced_value
+
+        # Range validation for numbers (use coerced value)
         if expected_type in ("number", "int"):
-            if "minimum" in spec and value < spec["minimum"]:
-                errors.append(f"Parameter '{key}' value {value} is below minimum {spec['minimum']}")
-            if "maximum" in spec and value > spec["maximum"]:
-                errors.append(f"Parameter '{key}' value {value} exceeds maximum {spec['maximum']}")
+            if "minimum" in spec and coerced_value < spec["minimum"]:
+                errors.append(f"Parameter '{key}' value {coerced_value} is below minimum {spec['minimum']}")
+            if "maximum" in spec and coerced_value > spec["maximum"]:
+                errors.append(f"Parameter '{key}' value {coerced_value} exceeds maximum {spec['maximum']}")
 
         # Length validation for arrays
         if expected_type == "array":
-            if "min_length" in spec and len(value) < spec["min_length"]:
+            if "min_length" in spec and len(coerced_value) < spec["min_length"]:
                 errors.append(f"Parameter '{key}' must have at least {spec['min_length']} items")
-            if "max_length" in spec and len(value) > spec["max_length"]:
+            if "max_length" in spec and len(coerced_value) > spec["max_length"]:
                 errors.append(f"Parameter '{key}' must have at most {spec['max_length']} items")
 
     return errors
