@@ -179,6 +179,9 @@ def encode_image(image: np.ndarray, **kwargs) -> proto.Pixels:
     Returns:
         Protobuf Pixels message
     """
+    # Add channel dim to the segmentation mask, matching the default 
+    # setting of serialization function.
+    image = image[..., None] 
     return serialize_from_numpy(image, **kwargs)
 
 
