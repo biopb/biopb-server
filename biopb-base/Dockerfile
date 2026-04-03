@@ -22,6 +22,12 @@ COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
+# Install biopb at specific version (extract x.y.z from VERSION file)
+COPY VERSION /tmp/VERSION
+RUN BIOPB_VER=$(cat /tmp/VERSION | tr -d '[:space:]') && \
+    pip install --no-cache-dir biopb=="${BIOPB_VER%-*}" && \
+    rm /tmp/VERSION
+
 # Copy common utilities to a location services can import from
 RUN mkdir -p /opt/biopb
 COPY common.py health.py debug.py server.py test.py test_streaming.py test_image.png /opt/biopb/
