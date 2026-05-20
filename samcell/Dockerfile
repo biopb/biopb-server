@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-base:0.2.1
+FROM jiyuuchc/biopb-image-base:latest
 
 WORKDIR $HOME
 
@@ -14,6 +14,10 @@ RUN python -c "from model import FinetunedSAM; _ = FinetunedSAM('facebook/sam-vi
 RUN wget -q https://github.com/saahilsanganeriya/SAMCell/releases/download/v1/samcell-generalist.pt
 
 EXPOSE 50051
+
+# Health check using grpc_health_probe (available in base image)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD grpc_health_probe -addr=localhost:50051 || exit 1
 
 ENTRYPOINT ["python", "./samcell_server.py"]
 CMD ["samcell-generalist.pt", "--no-token"]

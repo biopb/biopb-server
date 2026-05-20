@@ -5,8 +5,7 @@ import numpy as np
 import typer
 
 from cellpose import models, io
-from common import decode_image, encode_image, BiopbServicerBase, setup_logging
-from server import run_server
+from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, setup_logging, run_server
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -18,6 +17,8 @@ _TARGET_CELL_SIZE=30
 def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
     logger.debug(f"Received message of size {request.ByteSize()}")
 
+    image = decode_image_data(request.image_data)
+
     pixels = request.image_data.pixels
     if isinstance(request, proto.DetectionRequest):
         settings = request.detection_settings
@@ -28,7 +29,7 @@ def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
             diameter = settings.cell_diameter_hint / physical_size
         else:
             diameter = _TARGET_CELL_SIZE / (settings.scaling_hint or 1.0)
-        
+
         kwargs = dict(diameter = diameter)
 
         if settings.HasField("min_score"):
@@ -37,14 +38,13 @@ def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
     else:
         kwargs = dict()
 
-    image = decode_image(pixels)
     physical_size = pixels.physical_size_x or 1
 
     if image.shape[0] == 1: # 2D
         image = image.squeeze(0)
 
     logger.debug(f"decoded image {image.shape}")
-    
+
     logger.debug(f"kwargs: {kwargs}")
 
     return image, kwargs
@@ -120,7 +120,7 @@ class CellposeServicer(BiopbServicerBase):
                 )[0]
                 
             response = proto.ProcessResponse(
-                image_data = proto.ImageData(pixels = encode_image(mask)),
+                image_data = encode_image(mask),
             )
 
             logger.debug(f"Reply with message of size {response.ByteSize()}")

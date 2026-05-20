@@ -1,0 +1,10 @@
+# Test dependencies for biopb-server
+pytest >= 7.0
+pytest-timeout
+pytest-json-report  # For baseline capture
+grpcio
+grpcio-health-checking
+numpy
+imageio
+typer
+biopb  # Install from biopb repo or pip

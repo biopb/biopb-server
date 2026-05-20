@@ -4,10 +4,9 @@ import biopb.image as proto
 import numpy as np
 import typer
 
-from common import decode_image, encode_image, BiopbServicerBase, setup_logging
+from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, setup_logging, run_server
 from model import FinetunedSAM
 from pipeline import SlidingWindowPipeline
-from server import run_server
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -16,18 +15,18 @@ logger = logging.getLogger(__name__)
 def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
     logger.debug(f"Received message of size {request.ByteSize()}")
 
-    pixels = request.image_data.pixels
-    
+    image = decode_image_data(request.image_data)
+
     kwargs = dict()
 
-    image = decode_image(pixels)
+    pixels = request.image_data.pixels
     physical_size = pixels.physical_size_x or 1
 
     if image.shape[0] == 1: # 2D
         image = image.squeeze(0)
 
     logger.info(f"Received imag of {image.shape}")
-    
+
     return image, kwargs
 
 
@@ -100,7 +99,7 @@ class SamcellServicer(BiopbServicerBase):
             mask = self._predict(image)
                 
             response = proto.ProcessResponse(
-                image_data = proto.ImageData(pixels = encode_image(mask)),
+                image_data = encode_image(mask),
             )
 
             logger.debug(f"Reply with message of size {response.ByteSize()}")

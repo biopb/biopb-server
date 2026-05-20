@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-base:0.2.1
+FROM jiyuuchc/biopb-image-base:latest
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,6 +30,10 @@ ENV JAX_COMPILATION_CACHE_DIR="./jax_cache"
 ENV XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 EXPOSE 50051
+
+# Health check using grpc_health_probe (available in base image)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD grpc_health_probe -addr=localhost:50051 || exit 1
 
 ENTRYPOINT ["python", "./lacss_server.py"]
 CMD ["--no-token", "--f16", "--modelpath", "./lacss3-base.pkl"]

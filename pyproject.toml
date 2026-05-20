@@ -1,0 +1,32 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "smoke: basic connectivity tests (fast)",
+    "integration: service-specific tests (slower)",
+    "contract: API compliance tests",
+    "requires_gpu: tests that require GPU hardware",
+]
+timeout = 120  # Default timeout for tests
+timeout_method = "thread"
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+# Filter warnings
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest >= 7.0",
+    "pytest-timeout",
+    "pytest-json-report",
+    "grpcio",
+    "grpcio-health-checking",
+    "numpy",
+    "imageio",
+    "typer",
+]

@@ -1,4 +1,4 @@
-"""UCell gRPC server using biopb-base utilities."""
+"""UCell gRPC server using biopb_image_base utilities."""
 
 import logging
 from pathlib import Path
@@ -13,16 +13,14 @@ from ucell.dynamics import compute_masks, remove_bad_flow_masks
 from ucell.frm import FRMWrapper
 from ucell.utils import pad_channel, patcherize
 
-from common import (
+from biopb_image_base import (
     BiopbServicerBase,
-    decode_image,
+    decode_image_data,
     encode_image,
-    parse_kwargs,
     setup_logging,
-    validate_kwargs,
+    run_server,
 )
-
-from server import run_server
+from utils import parse_kwargs, validate_kwargs
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -99,8 +97,7 @@ def format_image(img: np.ndarray) -> np.ndarray:
 
 def process_input(request: proto.DetectionRequest):
     """Process input request and return image and kwargs."""
-    pixels = request.image_data.pixels
-    image = decode_image(pixels)
+    image = decode_image_data(request.image_data)
 
     # Handle 2D images
     if image.shape[0] == 1:
@@ -207,7 +204,7 @@ class UCellServicer(BiopbServicerBase):
         with self._server_context(context):
             logger.info(f"Received message of size {request.ByteSize()}")
 
-            image = decode_image(request.image_data.pixels)
+            image = decode_image_data(request.image_data)
 
             if image.shape[0] == 1:  # 2D
                 image = image.squeeze(0)
@@ -233,7 +230,7 @@ class UCellServicer(BiopbServicerBase):
             logger.info(f"Detected {mask.max()} cells")
 
             response = proto.ProcessResponse(
-                image_data=proto.ImageData(pixels=encode_image(mask.astype(np.uint16))),
+                image_data=encode_image(mask.astype(np.uint16)),
             )
 
             logger.info(f"Reply with message of size {response.ByteSize()}")

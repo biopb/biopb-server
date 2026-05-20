@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-base:0.2.5-1
+FROM jiyuuchc/biopb-image-base:latest
 
 USER biopb
 
@@ -17,6 +17,10 @@ RUN wget -q https://huggingface.co/jiyuuchc/ucell/resolve/main/ucell-768.pt -O m
 COPY --chown=biopb:biopb . .
 
 EXPOSE 50051
+
+# Health check using grpc_health_probe (available in base image)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD grpc_health_probe -addr=localhost:50051 || exit 1
 
 ENTRYPOINT ["python", "./ucell_server.py"]
 CMD ["--no-token", "--modelpath", "./model.pt"]

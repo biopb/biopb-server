@@ -4,9 +4,9 @@ import biopb.image as proto
 import numpy as np
 import typer
 
-from cellpose import models
-from common import decode_image, encode_image, BiopbServicerBase, setup_logging, parse_kwargs, validate_kwargs
-from server import run_server
+from cellpose import models, io
+from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, setup_logging, run_server
+from utils import parse_kwargs, validate_kwargs
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -68,11 +68,11 @@ _CELLPOSE_kwargs_SCHEMA = {
 
 
 def process_input(request: proto.DetectionRequest):
-    pixels = request.image_data.pixels
     settings = request.detection_settings
 
-    image = decode_image(pixels)
+    image = decode_image_data(request.image_data)
 
+    pixels = request.image_data.pixels
     physical_size = pixels.physical_size_x or 1
 
     # Start with default kwargs
@@ -166,8 +166,7 @@ class CellposeServicer(BiopbServicerBase):
         with self._server_context(context):
             logger.info(f"Received message of size {request.ByteSize()}")
 
-            pixels = request.image_data.pixels
-            image = decode_image(pixels)
+            image = decode_image_data(request.image_data)
 
             # Start with default kwargs
             kwargs = _DEFAULT_KWARGS.copy()
@@ -190,7 +189,7 @@ class CellposeServicer(BiopbServicerBase):
             mask = self.model.eval(image, **kwargs)[0]
 
             response = proto.ProcessResponse(
-                image_data = proto.ImageData(pixels = encode_image(mask)),
+                image_data = encode_image(mask),
             )
 
             logger.info(f"Reply with message of size {response.ByteSize()}")

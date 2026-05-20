@@ -1,4 +1,4 @@
-"""Lacss gRPC server using biopb-base utilities."""
+"""Lacss gRPC server using biopb_image_base utilities."""
 
 import logging
 from pathlib import Path
@@ -10,8 +10,7 @@ import numpy as np
 import typer
 from biopb.image.utils import serialize_from_numpy
 
-from common import decode_image, BiopbServicerBase, setup_logging
-from server import run_server
+from biopb_image_base import decode_image_data, BiopbServicerBase, setup_logging, run_server
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -22,12 +21,12 @@ _TARGET_CELL_SIZE = 32
 
 def _process_input(request: proto.DetectionRequest, image=None):
     """Process input request and return image and kwargs for lacss predict."""
-    pixels = request.image_data.pixels
     settings = request.detection_settings
 
     if image is None:
-        image = decode_image(pixels)
+        image = decode_image_data(request.image_data)
 
+    pixels = request.image_data.pixels
     physical_size = np.array(
         [
             pixels.physical_size_z
@@ -142,7 +141,7 @@ class LacssServicer(BiopbServicerBase):
         with self._server_context(context):
             logger.info(f"Received message of size {request.ByteSize()}")
 
-            image = decode_image(request.image_data.pixels)
+            image = decode_image_data(request.image_data)
 
             if image.shape[0] == 1:  # 2D
                 image = image.squeeze(0)
@@ -199,8 +198,8 @@ def _process_grid_input(request_iterator: Iterable[proto.DetectionRequest]):
         if total_msg_size > _MAX_STREAM_MSG_SIZE:
             raise ValueError(f"Input message size {total_msg_size} exceeded limit.")
 
+        image = decode_image_data(request.image_data)
         pixels = request.image_data.pixels
-        image = decode_image(pixels)
 
         grids.append(
             [
