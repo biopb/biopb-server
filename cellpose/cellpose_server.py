@@ -6,7 +6,7 @@ import typer
 
 from cellpose import models, io
 from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, setup_logging, run_server
-from utils import parse_kwargs, validate_kwargs
+from utils import parse_kwargs, validate_kwargs, ensure_eager
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -71,6 +71,7 @@ def process_input(request: proto.DetectionRequest):
     settings = request.detection_settings
 
     image = decode_image_data(request.image_data)
+    image = ensure_eager(image)
 
     pixels = request.image_data.pixels
     physical_size = pixels.physical_size_x or 1
@@ -167,6 +168,7 @@ class CellposeServicer(BiopbServicerBase):
             logger.info(f"Received message of size {request.ByteSize()}")
 
             image = decode_image_data(request.image_data)
+            image = ensure_eager(image)
 
             # Start with default kwargs
             kwargs = _DEFAULT_KWARGS.copy()

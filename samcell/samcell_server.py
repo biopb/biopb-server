@@ -5,6 +5,7 @@ import numpy as np
 import typer
 
 from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, setup_logging, run_server
+from utils import ensure_eager
 from model import FinetunedSAM
 from pipeline import SlidingWindowPipeline
 
@@ -16,6 +17,7 @@ def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
     logger.debug(f"Received message of size {request.ByteSize()}")
 
     image = decode_image_data(request.image_data)
+    image = ensure_eager(image)
 
     kwargs = dict()
 

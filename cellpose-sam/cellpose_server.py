@@ -6,6 +6,7 @@ import typer
 
 from cellpose import models, io
 from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, setup_logging, run_server
+from utils import ensure_eager
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -18,6 +19,7 @@ def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
     logger.debug(f"Received message of size {request.ByteSize()}")
 
     image = decode_image_data(request.image_data)
+    image = ensure_eager(image)
 
     pixels = request.image_data.pixels
     if isinstance(request, proto.DetectionRequest):

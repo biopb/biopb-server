@@ -7,9 +7,35 @@ needed by some services (e.g., kwargs validation).
 import logging
 from typing import Any
 
+import dask.array as da
+import numpy as np
 from google.protobuf.json_format import MessageToDict
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_eager(image: np.ndarray | da.Array) -> np.ndarray:
+    """Ensure image is a numpy array (eager), not a dask array (lazy).
+
+    Raises ValueError if lazy data is received, as current services
+    do not support lazy input data.
+
+    Args:
+        image: Numpy array or Dask array
+
+    Returns:
+        Numpy array (unchanged if already numpy)
+
+    Raises:
+        ValueError: If image is a dask array (lazy data)
+    """
+    if isinstance(image, da.Array):
+        raise ValueError(
+            "Lazy data (dask array) not supported. "
+            "Services currently only process eager data. "
+            f"Received lazy array with shape {image.shape}, dtype {image.dtype}."
+        )
+    return image
 
 
 def parse_kwargs(request, defaults: dict) -> dict:

@@ -11,6 +11,7 @@ import typer
 from biopb.image.utils import serialize_from_numpy
 
 from biopb_image_base import decode_image_data, BiopbServicerBase, setup_logging, run_server
+from utils import ensure_eager
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -25,6 +26,7 @@ def _process_input(request: proto.DetectionRequest, image=None):
 
     if image is None:
         image = decode_image_data(request.image_data)
+        image = ensure_eager(image)
 
     pixels = request.image_data.pixels
     physical_size = np.array(
@@ -142,6 +144,7 @@ class LacssServicer(BiopbServicerBase):
             logger.info(f"Received message of size {request.ByteSize()}")
 
             image = decode_image_data(request.image_data)
+            image = ensure_eager(image)
 
             if image.shape[0] == 1:  # 2D
                 image = image.squeeze(0)
@@ -199,6 +202,7 @@ def _process_grid_input(request_iterator: Iterable[proto.DetectionRequest]):
             raise ValueError(f"Input message size {total_msg_size} exceeded limit.")
 
         image = decode_image_data(request.image_data)
+        image = ensure_eager(image)
         pixels = request.image_data.pixels
 
         grids.append(

@@ -20,7 +20,7 @@ from biopb_image_base import (
     setup_logging,
     run_server,
 )
-from utils import parse_kwargs, validate_kwargs
+from utils import parse_kwargs, validate_kwargs, ensure_eager
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -98,6 +98,7 @@ def format_image(img: np.ndarray) -> np.ndarray:
 def process_input(request: proto.DetectionRequest):
     """Process input request and return image and kwargs."""
     image = decode_image_data(request.image_data)
+    image = ensure_eager(image)
 
     # Handle 2D images
     if image.shape[0] == 1:
@@ -205,6 +206,7 @@ class UCellServicer(BiopbServicerBase):
             logger.info(f"Received message of size {request.ByteSize()}")
 
             image = decode_image_data(request.image_data)
+            image = ensure_eager(image)
 
             if image.shape[0] == 1:  # 2D
                 image = image.squeeze(0)
