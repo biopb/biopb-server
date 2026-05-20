@@ -10,8 +10,7 @@ import numpy as np
 import typer
 from biopb.image.utils import serialize_from_numpy
 
-from biopb_image_base import decode_image_data, BiopbServicerBase, setup_logging, run_server
-from utils import ensure_eager
+from biopb_image_base import decode_image_data, BiopbServicerBase, run_server, ensure_eager
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -271,10 +270,7 @@ def main(
     debug: bool = False,
     compression: bool = True,
     f16: bool = False,
-    json_logging: bool = False,
 ):
-    setup_logging(debug=debug, json_format=json_logging)
-
     model = get_predictor(modelpath, f16)
 
     logger.info(f"Default backend is {jax.default_backend()}")
@@ -289,7 +285,7 @@ def main(
         ip=ip,
         local=local,
         token=token,
-        debug=debug,
+        log_level="DEBUG" if debug else "INFO",
         compression=compression,
     )
 

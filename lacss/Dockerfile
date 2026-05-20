@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-image-base:latest
+FROM jiyuuchc/biopb-image-base:8771c98
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,7 +31,6 @@ ENV XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 EXPOSE 50051
 
-# Health check using grpc_health_probe (available in base image)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD grpc_health_probe -addr=localhost:50051 || exit 1
 

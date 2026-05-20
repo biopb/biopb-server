@@ -17,10 +17,11 @@ from biopb_image_base import (
     BiopbServicerBase,
     decode_image_data,
     encode_image,
-    setup_logging,
     run_server,
+    parse_kwargs,
+    validate_kwargs,
+    ensure_eager,
 )
-from utils import parse_kwargs, validate_kwargs, ensure_eager
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -128,18 +129,27 @@ def process_result(mask: np.ndarray, image: np.ndarray) -> proto.DetectionRespon
     for rp in regionprops(mask):
         mask_region = rp.image.astype("uint8")
         contours, _ = cv2.findContours(mask_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
         if len(contours) == 0:
             continue
 
-        contour = np.array(contours[0], dtype=float).squeeze(1)
-        contour = contour + np.array([rp.bbox[1], rp.bbox[0]])
-        contour = contour - 0.5
+        # Use the largest contour
+        contour = max(contours, key=len)
+
+        # Need at least 3 points for a valid polygon
+        if len(contour) < 3:
+            continue
+
+        # Extract points and shift to global coordinates
+        points = contour.squeeze(1)  # Shape: (N, 2)
+        points = points + np.array([rp.bbox[1], rp.bbox[0]])
+        points = points - 0.5
 
         scored_roi = proto.ScoredROI(
             score=1.0,
             roi=proto.ROI(
                 polygon=proto.Polygon(
-                    points=[proto.Point(x=p[0], y=p[1]) for p in contour]
+                    points=[proto.Point(x=p[0], y=p[1]) for p in points]
                 ),
             ),
         )
@@ -241,20 +251,15 @@ class UCellServicer(BiopbServicerBase):
 
     def GetOpNames(self, request, context):
         """Return the available operations and their parameter schemas."""
-        from google.protobuf.struct_pb2 import Struct
-
-        default_kwargs = Struct()
-        default_kwargs.update(_DEFAULT_KWARGS)
-
-        schema = proto.OpSchema(
-            default_kwargs=default_kwargs,
-            description="UCell cell segmentation model (FRM-based)",
-        )
-
-        op_names = proto.OpNames(names=["ucell"])
-        op_names.op_schemas.get_or_create("ucell").CopyFrom(schema)
-
-        return op_names
+        with self._server_context(context):
+            return proto.OpNames(
+                names=["ucell"],
+                op_schemas={
+                    "ucell": proto.OpSchema(
+                        description="UCell cell segmentation model (FRM-based)",
+                    ),
+                }
+            )
 
 
 def load_model(modelpath: Path, config, device: torch.device):
@@ -291,13 +296,11 @@ def main(
     debug: bool = False,
     compression: bool = True,
     gpu: bool = True,
-    json_logging: bool = False,
     small_model: bool = False,
 ):
-    setup_logging(debug=debug, json_format=json_logging)
-
     config = get_config()
-    if small_model: config.model.hidden_size = 768
+    if small_model:
+        config.model.hidden_size = 768
 
     device = torch.device("cuda" if gpu and torch.cuda.is_available() else "cpu")
     model = load_model(modelpath, config, device)
@@ -314,7 +317,7 @@ def main(
         ip=ip,
         local=local,
         token=token,
-        debug=debug,
+        log_level="DEBUG" if debug else "INFO",
         compression=compression,
     )
 

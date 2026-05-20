@@ -5,8 +5,7 @@ import numpy as np
 import typer
 
 from cellpose import models, io
-from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, setup_logging, run_server
-from utils import parse_kwargs, validate_kwargs, ensure_eager
+from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, run_server, parse_kwargs, validate_kwargs, ensure_eager
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -118,20 +117,32 @@ def process_result(preds, image):
 
     for rp in regionprops(masks):
         mask = rp.image.astype("uint8")
-        c, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        c = np.array(c[0], dtype=float).squeeze(1)
-        c = c + np.array([rp.bbox[1] , rp.bbox[0]])
-        c = c - 0.5
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if len(contours) == 0:
+            continue
+
+        # Use the largest contour
+        contour = max(contours, key=len)
+
+        # Need at least 3 points for a valid polygon
+        if len(contour) < 3:
+            continue
+
+        # Extract points and shift to global coordinates
+        points = contour.squeeze(1)  # Shape: (N, 2)
+        points = points + np.array([rp.bbox[1], rp.bbox[0]])
+        points = points - 0.5
 
         scored_roi = proto.ScoredROI(
-            score = 1.0,
-            roi = proto.ROI(
-                polygon = proto.Polygon(points = [proto.Point(x=p[0], y=p[1]) for p in c]),
-            )
+            score=1.0,
+            roi=proto.ROI(
+                polygon=proto.Polygon(points=[proto.Point(x=p[0], y=p[1]) for p in points]),
+            ),
         )
 
         response.detections.append(scored_roi)
-    
+
     logger.debug(f"Found {len(response.detections)} detections")
 
     return response
@@ -200,20 +211,15 @@ class CellposeServicer(BiopbServicerBase):
 
     def GetOpNames(self, request, context):
         """Return the available operations and their parameter schemas."""
-        from google.protobuf.struct_pb2 import Struct
-
-        default_kwargs = Struct()
-        default_kwargs.update(_DEFAULT_KWARGS)
-
-        schema = proto.OpSchema(
-            default_kwargs=default_kwargs,
-            description="Cellpose Cyto3 cell segmentation model",
-        )
-
-        op_names = proto.OpNames(names=["cellpose"])
-        op_names.op_schemas.get_or_create("cellpose").CopyFrom(schema)
-
-        return op_names
+        with self._server_context(context):
+            return proto.OpNames(
+                names=["cellpose"],
+                op_schemas={
+                    "cellpose": proto.OpSchema(
+                        description="Cellpose Cyto3 cell segmentation model",
+                    ),
+                }
+            )
 
 
 @app.command()
@@ -225,12 +231,9 @@ def main(
     local: bool = False,
     token: bool | None = None,
     debug: bool = False,
-    json_logging: bool = False,
     compression: bool = True,
     gpu: bool = True,
 ):
-    setup_logging(debug=debug, json_format=json_logging)
-
     model = models.Cellpose(model_type=modeltype, gpu=gpu)
 
     run_server(
@@ -240,7 +243,7 @@ def main(
         ip=ip,
         local=local,
         token=token,
-        debug=debug,
+        log_level="DEBUG" if debug else "INFO",
         compression=compression,
     )
 

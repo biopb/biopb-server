@@ -80,22 +80,30 @@ class DockerService:
         self._proc: Optional[subprocess.Popen] = None
         self._channel: Optional[grpc.Channel] = None
 
-    def build(self) -> bool:
-        """Build the Docker image."""
-        image_tag = f"{self.service_name}-test"
+    def image_exists(self) -> bool:
+        """Check if Docker image exists."""
+        image_tag = f"{self.service_name}:test"
         result = subprocess.run(
-            ["docker", "build", "-t", image_tag, str(self.build_dir)],
+            ["docker", "image", "inspect", image_tag],
             capture_output=True,
-            text=True,
         )
-        if result.returncode != 0:
-            print(f"Build failed: {result.stderr}")
-            return False
-        return True
+        return result.returncode == 0
 
     def start(self) -> bool:
-        """Start the Docker container."""
-        image_tag = f"{self.service_name}-test"
+        """Start the Docker container if image exists.
+
+        If a healthy service is already running on the port, reuse it.
+        """
+        image_tag = f"{self.service_name}:test"
+
+        # Check if service is already running and healthy
+        if wait_for_service(f"127.0.0.1:{self.port}", timeout=2):
+            # Service already running, reuse it
+            return True
+
+        if not self.image_exists():
+            return False
+
         self._proc = subprocess.Popen(
             [
                 "docker", "run", "--rm", "--gpus=all",
@@ -110,9 +118,9 @@ class DockerService:
         return wait_for_service(f"127.0.0.1:{self.port}")
 
     def stop(self) -> None:
-        """Stop the Docker container."""
-        subprocess.run(["docker", "stop", self.container_name], check=False)
+        """Stop the Docker container (only if we started it)."""
         if self._proc:
+            subprocess.run(["docker", "stop", self.container_name], check=False)
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=5)
@@ -146,9 +154,9 @@ def test_image():
 
 @pytest.fixture
 def test_image_2d():
-    """Generate a 2D test image."""
-    from tests.utils.image_utils import generate_test_image
-    return generate_test_image(512, 512, 3)
+    """Load a 2D test image with cells."""
+    from tests.utils.image_utils import load_test_image
+    return load_test_image()
 
 
 @pytest.fixture
@@ -198,10 +206,12 @@ def cellpose_service():
 
     Cellpose is the lightest service and can often run on machines
     with limited GPU memory or even CPU-only (slow but functional).
+
+    Requires pre-built image: cellpose:test
     """
     service = DockerService("cellpose")
-    if not service.build():
-        pytest.skip("Failed to build cellpose image")
+    if not service.image_exists():
+        pytest.skip("Image cellpose:test not found - build it first with: docker build -t cellpose:test cellpose/")
     if not service.start():
         pytest.skip("Failed to start cellpose service")
     yield service
@@ -212,36 +222,64 @@ def cellpose_service():
 def cellpose_sam_service():
     """Launch cellpose-sam service for testing.
 
-    Requires ~4GB GPU memory. Skip if not available.
+    Requires ~4GB GPU memory.
+    Requires pre-built image: cellpose-sam:test
     """
-    pytest.skip("cellpose-sam requires ~4GB GPU memory - skipped for local testing")
+    service = DockerService("cellpose-sam")
+    if not service.image_exists():
+        pytest.skip("Image cellpose-sam:test not found - build it first")
+    if not service.start():
+        pytest.skip("Failed to start cellpose-sam service")
+    yield service
+    service.stop()
 
 
 @pytest.fixture(scope="session")
 def lacss_service():
     """Launch lacss service for testing.
 
-    Requires ~2GB GPU memory. Skip if not available.
+    Requires ~2GB GPU memory.
+    Requires pre-built image: lacss:test
     """
-    pytest.skip("lacss requires ~2GB GPU memory - skipped for local testing")
+    service = DockerService("lacss")
+    if not service.image_exists():
+        pytest.skip("Image lacss:test not found - build it first")
+    if not service.start():
+        pytest.skip("Failed to start lacss service")
+    yield service
+    service.stop()
 
 
 @pytest.fixture(scope="session")
 def samcell_service():
     """Launch samcell service for testing.
 
-    Requires ~4GB GPU memory. Skip if not available.
+    Requires ~4GB GPU memory.
+    Requires pre-built image: samcell:test
     """
-    pytest.skip("samcell requires ~4GB GPU memory - skipped for local testing")
+    service = DockerService("samcell")
+    if not service.image_exists():
+        pytest.skip("Image samcell:test not found - build it first")
+    if not service.start():
+        pytest.skip("Failed to start samcell service")
+    yield service
+    service.stop()
 
 
 @pytest.fixture(scope="session")
 def ucell_service():
     """Launch ucell service for testing.
 
-    Requires ~2GB GPU memory. Skip if not available.
+    Requires ~2GB GPU memory.
+    Requires pre-built image: ucell:test
     """
-    pytest.skip("ucell requires ~2GB GPU memory - skipped for local testing")
+    service = DockerService("ucell")
+    if not service.image_exists():
+        pytest.skip("Image ucell:test not found - build it first")
+    if not service.start():
+        pytest.skip("Failed to start ucell service")
+    yield service
+    service.stop()
 
 
 # Convenience fixtures for direct channel/stub access
