@@ -1,5 +1,11 @@
 FROM jiyuuchc/biopb-image-base:8771c98
 
+# Install git for pip install from git repos
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+USER biopb
+
 WORKDIR $HOME
 
 # Install Python dependencies
