@@ -16,10 +16,9 @@ RUN wget -q https://huggingface.co/jiyuuchc/lacss3/resolve/main/lacss3-base.pkl 
 # Create JAX cache directory
 RUN mkdir jax_cache
 
-# Copy service code
-COPY --chown=biopb:biopb . .
-
 # Install dependencies
+COPY --chown=biopb:biopb ./requirements.txt .
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install lacss with specific version
@@ -28,6 +27,9 @@ RUN pip install --no-cache-dir --no-deps lacss==$VERSION
 
 ENV JAX_COMPILATION_CACHE_DIR="./jax_cache"
 ENV XLA_PYTHON_CLIENT_PREALLOCATE=false
+
+# Copy service code
+COPY --chown=biopb:biopb . .
 
 EXPOSE 50051
 

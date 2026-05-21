@@ -287,7 +287,7 @@ def load_model(modelpath: Path, config, device: torch.device):
 
 @app.command()
 def main(
-    modelpath: Path = typer.Option(..., help="Path to the model checkpoint"),
+    modelpath: Path = typer.Option("./model.pt", help="Path to the model checkpoint"),
     port: int = 50051,
     workers: int = 10,
     ip: str = "0.0.0.0",

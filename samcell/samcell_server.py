@@ -1,5 +1,7 @@
 import logging
 
+from pathlib import Path
+
 import biopb.image as proto
 import numpy as np
 import typer
@@ -51,8 +53,9 @@ def to_det_response(masks, image):
         if len(contour) < 3:
             continue
 
-        # Extract points and shift to global coordinates
-        points = contour.squeeze(1)  # Shape: (N, 2)
+        # Extract points - handle different contour shapes
+        # contour shape is typically (N, 1, 2), reshape to (N, 2)
+        points = contour.reshape(-1, 2)
         points = points + np.array([rp.bbox[1], rp.bbox[0]])
         points = points - 0.5
 
@@ -81,8 +84,10 @@ class SamcellServicer(BiopbServicerBase):
     def _predict(self, image):
         if image.ndim == 4:
             raise ValueError("3D input is not supported.")
-        
-        image = image.mean(axis=-1)
+
+        # Convert to grayscale if needed
+        if image.ndim == 3 and image.shape[-1] > 1:
+            image = image.mean(axis=-1)
 
         image = (image - image.min()) / (image.max() - image.min())
 
@@ -97,8 +102,6 @@ class SamcellServicer(BiopbServicerBase):
             mask = self._predict(image)
 
             logger.info(f"Reply mask image {mask.shape} with {mask.max()} labels.")
-
-            response = to_det_response(mask, image)
 
             response = to_det_response(mask, image)
 
@@ -122,7 +125,7 @@ class SamcellServicer(BiopbServicerBase):
 
 @app.command()
 def main(
-    model_path: str,
+    model_path: Path = Path("samcell-generalist.pt"),
     port: int = 50051,
     workers: int = 10,
     ip: str = "0.0.0.0",

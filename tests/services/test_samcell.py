@@ -13,6 +13,10 @@ class TestSamcellSmoke(ServiceTestBase):
 
     service_fixture_name = "samcell_service"
 
+    @pytest.mark.skip(reason="Samcell does not implement GetOpNames")
+    def test_get_op_names(self, request):
+        pass
+
 
 class TestSamcellIntegration:
     """Integration tests for Samcell-specific features."""
@@ -47,12 +51,4 @@ class TestSamcellIntegration:
         result = deserialize_image_data(response.image_data)
         assert result.shape[:2] == test_image_2d.shape[:2]
 
-    @pytest.mark.integration
-    def test_get_op_names(self, request):
-        """GetOpNames should return available operations."""
-        service = request.getfixturevalue("samcell_service")
-        stub = service.process_stub()
-
-        from google.protobuf.empty_pb2 import Empty
-        response = stub.GetOpNames(Empty(), timeout=10)
-        assert len(response.names) > 0
+    

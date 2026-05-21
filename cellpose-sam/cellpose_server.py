@@ -41,7 +41,10 @@ def process_input(request: proto.DetectionRequest | proto.ProcessRequest):
 
     physical_size = pixels.physical_size_x or 1
 
-    if image.shape[0] == 1: # 2D
+    if image.ndim == 2:  # 2D grayscale, add channel dimension
+        image = image[..., np.newaxis]
+
+    if image.shape[0] == 1: # leading singleton dimension
         image = image.squeeze(0)
 
     logger.debug(f"decoded image {image.shape}")
@@ -97,6 +100,18 @@ class CellposeServicer(BiopbServicerBase):
     def __init__(self, model):
         super().__init__()
         self.model = model
+
+    def GetOpNames(self, request, context):
+        """Return the available operations and their parameter schemas."""
+        with self._server_context(context):
+            return proto.OpNames(
+                names=["cellpose"],
+                op_schemas={
+                    "cellpose": proto.OpSchema(
+                        description="Cellpose cell segmentation model",
+                    ),
+                }
+            )
 
     def RunDetection(self, request, context):
         with self._server_context(context):

@@ -1,5 +1,9 @@
 FROM jiyuuchc/biopb-image-base:8771c98
 
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR $HOME
 
 # Install Python dependencies

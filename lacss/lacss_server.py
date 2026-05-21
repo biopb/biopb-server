@@ -19,6 +19,41 @@ logger = logging.getLogger(__name__)
 _TARGET_CELL_SIZE = 32
 
 
+def _get_physical_sizes(image_data: proto.ImageData) -> np.ndarray:
+    """Get physical sizes from ImageData, handling both pixels and eager_data formats.
+
+    Returns physical sizes for Z, Y, X as a numpy array.
+    Defaults to 1.0 if not specified.
+    """
+    # Check deprecated pixels field first
+    if image_data.HasField("pixels"):
+        pixels = image_data.pixels
+        physical_size = np.array(
+            [
+                pixels.physical_size_z or pixels.physical_size_x,  # one might set xy but not z
+                pixels.physical_size_y or 1.0,
+                pixels.physical_size_x or 1.0,
+            ],
+            dtype="float",
+        )
+    # Check image_annotation for new format
+    elif image_data.HasField("image_annotation") and len(image_data.image_annotation.pixels_sizes) >= 2:
+        sizes = image_data.image_annotation.pixels_sizes
+        # pixels_sizes order should match dimension order, typically [Z, Y, X] or [Y, X]
+        if len(sizes) >= 3:
+            physical_size = np.array([sizes[0], sizes[1], sizes[2]], dtype="float")
+        else:
+            # Assume Y, X only
+            physical_size = np.array([sizes[0], sizes[0], sizes[1]], dtype="float")
+    else:
+        physical_size = np.array([1.0, 1.0, 1.0], dtype="float")
+
+    # Ensure no zeros
+    physical_size[physical_size == 0] = 1.0
+
+    return physical_size
+
+
 def _process_input(request: proto.DetectionRequest, image=None):
     """Process input request and return image and kwargs for lacss predict."""
     settings = request.detection_settings
@@ -27,36 +62,51 @@ def _process_input(request: proto.DetectionRequest, image=None):
         image = decode_image_data(request.image_data)
         image = ensure_eager(image)
 
-    pixels = request.image_data.pixels
-    physical_size = np.array(
-        [
-            pixels.physical_size_z
-            or pixels.physical_size_x,  # one might set xy but not z
-            pixels.physical_size_y,
-            pixels.physical_size_x,
-        ],
-        dtype="float",
-    )
-    if (physical_size == 0).any():
-        physical_size[:] = 1.0
+    physical_size = _get_physical_sizes(request.image_data)
+
+    # Get image dimensions - handle 2D (H, W) or 2D with channel (H, W, C)
+    # or 3D (Z, H, W) / (Z, H, W, C)
+    if image.ndim == 2:  # Pure 2D grayscale (H, W)
+        img_shape_3d = (1, image.shape[0], image.shape[1])
+        phys_size_3d = (physical_size[0] if len(physical_size) > 2 else 1.0, physical_size[1], physical_size[2] if len(physical_size) > 2 else physical_size[1])
+    elif image.ndim == 3:  # Could be 2D+channel or 3D
+        # Assume last dim is channel if it's small (1-4), else it's 3D without channel
+        if image.shape[-1] <= 4:
+            img_shape_3d = (1, image.shape[0], image.shape[1])
+            phys_size_3d = (physical_size[0] if len(physical_size) > 2 else 1.0, physical_size[1], physical_size[2] if len(physical_size) > 2 else physical_size[1])
+        else:
+            img_shape_3d = image.shape[:3]
+            phys_size_3d = physical_size[:3]
+    else:  # 4D or more - assume (Z, Y, X, C)
+        img_shape_3d = image.shape[:3]
+        phys_size_3d = physical_size[:3]
+
+    phys_size_3d = np.array(phys_size_3d)
 
     if settings.HasField("cell_diameter_hint"):
-        scaling = _TARGET_CELL_SIZE / settings.cell_diameter_hint * physical_size
+        scaling = _TARGET_CELL_SIZE / settings.cell_diameter_hint * phys_size_3d
 
     else:
-        if physical_size[1] != physical_size[2]:
+        if phys_size_3d[1] != phys_size_3d[2]:
             raise ValueError("Scaling hint provided, but pixel is not isometric")
 
         scaling = np.array([settings.scaling_hint or 1.0] * 3, dtype="float")
-        scaling[0] *= physical_size[0] / physical_size[1]
+        scaling[0] *= phys_size_3d[0] / phys_size_3d[1]
 
     logger.info(f"Requested rescaling factor is {scaling}")
 
-    shape_hint = tuple(np.round(scaling * image.shape[:3]).astype(int))
+    shape_hint = tuple(np.round(scaling * img_shape_3d).astype(int))
 
-    if image.shape[0] == 1:  # 2D
-        image = image.squeeze(0)
+    # Handle 2D images
+    if image.ndim == 2:
+        # Pure 2D - squeeze Z dimension from shape_hint
         shape_hint = shape_hint[1:]
+    elif image.ndim == 3 and image.shape[-1] <= 4:
+        # 2D with channel - squeeze Z dimension from shape_hint
+        shape_hint = shape_hint[1:]
+        # But keep channel for reshape_to
+        if image.shape[-1] > 1:
+            shape_hint = list(shape_hint) + [image.shape[-1]]
 
     kwargs = dict(
         reshape_to=shape_hint,
@@ -73,7 +123,9 @@ def _process_result(preds, image) -> proto.DetectionResponse:
     """Convert lacss predictions to DetectionResponse."""
     response = proto.DetectionResponse()
 
-    if image.ndim == 3:  # 2D returns polygon
+    is_2d = image.ndim == 2 or (image.ndim == 3 and image.shape[-1] <= 4)
+
+    if is_2d:  # 2D returns polygon
         for contour, score in zip(preds["pred_contours"], preds["pred_scores"]):
             if len(contour) == 0:
                 continue
@@ -261,7 +313,7 @@ def get_predictor(modelpath: Path, f16: bool = False):
 
 @app.command()
 def main(
-    modelpath: Path = typer.Option(..., help="Path to the model file"),
+    modelpath: Path = typer.Option("./lacss3-base.pkl", help="Path to the model file"),
     port: int = 50051,
     workers: int = 10,
     ip: str = "0.0.0.0",

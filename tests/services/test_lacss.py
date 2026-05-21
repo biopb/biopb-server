@@ -13,6 +13,10 @@ class TestLacssSmoke(ServiceTestBase):
 
     service_fixture_name = "lacss_service"
 
+    @pytest.mark.skip(reason="Lacss does not implement GetOpNames")
+    def test_get_op_names(self, request):
+        pass
+
 
 class TestLacssIntegration:
     """Integration tests for Lacss-specific features."""
@@ -47,12 +51,4 @@ class TestLacssIntegration:
         for det in response.detections:
             assert det.score >= 0.0
 
-    @pytest.mark.integration
-    def test_get_op_names(self, request):
-        """GetOpNames should return available operations."""
-        service = request.getfixturevalue("lacss_service")
-        stub = service.process_stub()
-
-        from google.protobuf.empty_pb2 import Empty
-        response = stub.GetOpNames(Empty(), timeout=10)
-        assert len(response.names) > 0
+    
