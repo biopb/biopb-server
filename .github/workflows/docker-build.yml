@@ -13,6 +13,11 @@ on:
         required: true
         default: true
         type: boolean
+  push:
+    branches:
+      - master
+    paths:
+      - '*/VERSION'
 
 env:
   REGISTRY: docker.io
@@ -27,41 +32,56 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need history to diff which VERSION files changed
 
       - name: Prepare build matrix
         id: prepare
         run: |
-          # Discover all services with Dockerfiles
-          ALL_DIRS=$(ls -1 */Dockerfile 2>/dev/null | cut -d'/' -f1 | sort -u)
-
-          INPUT="${{ inputs.services }}"
-          PUSH="${{ inputs.push }}"
-
-          if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
-            # Build all services
-            BUILD_DIRS=$(echo "$ALL_DIRS" | jq -R . | jq -s .)
-          else
-            # Build specified services (comma-separated)
-            BUILD_DIRS=$(echo "$INPUT" | tr ',' '\n' | while read dir; do
+          dirs_to_json() {
+            while read -r dir; do
               dir=$(echo "$dir" | tr -d ' ')
+              [ -z "$dir" ] && continue
               if [ -f "$dir/Dockerfile" ]; then
                 echo "\"$dir\""
               else
                 echo "Warning: $dir/Dockerfile not found, skipping" >&2
               fi
-            done | jq -s .)
+            done | jq -sc .
+          }
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # VERSION bump on master: build only services whose VERSION changed; always push.
+            BEFORE="${{ github.event.before }}"
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              BEFORE="${{ github.sha }}^"
+            fi
+            CHANGED=$(git diff --name-only "$BEFORE" "${{ github.sha }}" -- '*/VERSION' \
+                      | cut -d'/' -f1 | sort -u || true)
+            BUILD_DIRS=$(echo "$CHANGED" | dirs_to_json)
+            PUSH="true"
+          else
+            # Manual dispatch: honor the services/push inputs.
+            INPUT="${{ inputs.services }}"
+            PUSH="${{ inputs.push }}"
+            if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
+              ALL_DIRS=$(ls -1 */Dockerfile 2>/dev/null | cut -d'/' -f1 | sort -u)
+              BUILD_DIRS=$(echo "$ALL_DIRS" | dirs_to_json)
+            else
+              BUILD_DIRS=$(echo "$INPUT" | tr ',' '\n' | dirs_to_json)
+            fi
           fi
 
           echo "build_dirs=$BUILD_DIRS" >> $GITHUB_OUTPUT
           echo "push=$PUSH" >> $GITHUB_OUTPUT
-          echo "Building: $BUILD_DIRS"
+          echo "Building: $BUILD_DIRS (push=$PUSH)"
 
       - name: Build summary
         run: |
           echo "## Build Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- **Services**: ${{ inputs.services }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Push to registry**: ${{ inputs.push }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Build matrix**: ${{ steps.prepare.outputs.build_dirs }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Push to registry**: ${{ steps.prepare.outputs.push }}" >> $GITHUB_STEP_SUMMARY
 
   build-and-push:
     needs: prepare
