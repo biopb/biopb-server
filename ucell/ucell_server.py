@@ -8,6 +8,7 @@ import dask.array as da
 import numpy as np
 import torch
 import typer
+from google.protobuf.struct_pb2 import Struct
 from ml_collections import ConfigDict
 from biopb.image.utils import get_image_data_dim_labels, normalize_array_dims, deserialize_image_data
 
@@ -377,11 +378,14 @@ class UCellServicer(BiopbServicerBase):
     def GetOpNames(self, request, context):
         """Return the available operations and their parameter schemas."""
         with self._server_context(context):
+            default_kwargs = Struct()
+            default_kwargs.update(_DEFAULT_KWARGS)
             return proto.OpNames(
                 names=["ucell"],
                 op_schemas={
                     "ucell": proto.OpSchema(
                         description="UCell cell segmentation model (FRM-based)",
+                        default_kwargs=default_kwargs,
                     ),
                 }
             )

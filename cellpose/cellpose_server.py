@@ -1,11 +1,18 @@
 import logging
 
 import biopb.image as proto
+import dask.array as da
 import numpy as np
 import typer
+from google.protobuf.struct_pb2 import Struct
 
-from cellpose import models, io
+from cellpose import models
 from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, run_server, parse_kwargs, validate_kwargs, ensure_eager
+
+# Sibling, import-light service modules (top-level: they sit next to this file
+# at $HOME in the container; tests add the dir to sys.path).
+import stitch
+import dynamics_local
 
 app = typer.Typer(pretty_exceptions_enable=False)
 
@@ -150,9 +157,14 @@ def process_result(preds, image):
 
 class CellposeServicer(BiopbServicerBase):
 
-    def __init__(self, model):
+    def __init__(self, model, tile_size: int = 1024, overlap_margin: int = 64):
         super().__init__()
         self.model = model
+        # Lazy-path chunking. overlap_margin must exceed the largest expected
+        # cell diameter for border IDs to stay consistent (see stitch.py); it is
+        # additionally floored from the request diameter at run time.
+        self.tile_size = tile_size
+        self.overlap_margin = overlap_margin
 
     def RunDetection(self, request, context):
         with self._server_context(context):
@@ -179,44 +191,150 @@ class CellposeServicer(BiopbServicerBase):
             logger.info(f"Received message of size {request.ByteSize()}")
 
             image = decode_image_data(request.image_data)
-            image = ensure_eager(image)
 
-            # Start with default kwargs
-            kwargs = _DEFAULT_KWARGS.copy()
-
-            if image.shape[0] == 1: # 2D
-                image = image.squeeze(0)
-            else:
-                kwargs["do_3D"] = True
-
-            # Merge with kwargs from request (if provided)
-            kwargs = parse_kwargs(request, kwargs)
-
-            # Validate kwargs
+            # Start with default kwargs, merge request kwargs, validate.
+            kwargs = parse_kwargs(request, _DEFAULT_KWARGS.copy())
             errors = validate_kwargs(kwargs, _CELLPOSE_kwargs_SCHEMA)
             if errors:
                 raise ValueError("Invalid kwargs: " + "; ".join(errors))
+
+            # Lazy (dask) input may be larger than memory: process it tile-by-tile
+            # and stream a lazy label-mask result back via the tensor cache.
+            if isinstance(image, da.Array):
+                return self._run_lazy(image, kwargs)
+
+            image = ensure_eager(image)
+
+            if image.shape[0] == 1:  # 2D
+                image = image.squeeze(0)
+            else:
+                kwargs["do_3D"] = True
 
             logger.info(f"Decoded image {image.shape}")
 
             mask = self.model.eval(image, **kwargs)[0]
 
             response = proto.ProcessResponse(
-                image_data = encode_image(mask),
+                image_data=encode_image(mask),
             )
 
             logger.info(f"Reply with message of size {response.ByteSize()}")
 
             return response
 
+    def _run_lazy(self, image, kwargs) -> proto.ProcessResponse:
+        """Tile-wise ProcessImage for a lazy (dask) input, larger than memory.
+
+        Mirrors the ucell lazy path: allocate the label-mask output at the
+        co-located tensor cache, then run :func:`stitch.stitch_lazy_segmentation`
+        over overlapping tiles. Each tile is fetched, run through the Cellpose
+        network (flows only, ``compute_masks=False``) to get the spatial flow
+        ``dP`` and ``cellprob``, integrated to per-pixel destinations, clustered
+        with cross-tile ID inheritance, cropped to its core, and uploaded -- so
+        neither the input nor the output is ever fully in memory. Returns a
+        ``ProcessResponse`` whose image is a ``lazy_data`` reference.
+        """
+        if self._tensor_cache is None:
+            raise ValueError(
+                "Lazy (dask) input requires a tensor cache to write the result. "
+                "Start the server with --cache-dir."
+            )
+
+        # Collapse a leading singleton Z (2D images arrive as (1, Y, X[, C])).
+        if image.ndim >= 3 and image.shape[0] == 1:
+            image = image[0]
+
+        if image.ndim == 2:
+            full_shape, channel_axis = tuple(image.shape), None
+        elif image.ndim == 3:
+            full_shape, channel_axis = tuple(image.shape[:2]), 2
+        else:
+            raise ValueError("Lazy processing currently supports 2D images only.")
+
+        diameter = kwargs["diameter"]
+        # Overlap must cover a whole cell so a straddling cell yields the same
+        # destination in every tile that touches it (see stitch.py).
+        margin = max(self.overlap_margin, int(np.ceil(2 * diameter)))
+        core_shape = tuple(
+            stitch.uniform_core(full_shape[i], self.tile_size) for i in range(2)
+        )
+        # Cellpose rescales each tile so mean diameter == 30 before the net and
+        # integrates for (1/rescale)*200 == (diameter/30)*200 Euler steps.
+        niter = max(1, int(round(diameter / 30.0 * 200)))
+        logger.info(
+            f"Lazy ProcessImage: image {image.shape}, core {core_shape}, "
+            f"margin {margin}, niter {niter}"
+        )
+
+        from biopb.tensor import ChunkBounds
+
+        template = da.zeros(full_shape, chunks=core_shape, dtype=np.int32)
+        registration = self._tensor_cache.create_array(
+            source_name=None, dim_labels=["Y", "X"], array_template=template
+        )
+        source_id = registration.tensor_descriptor.array_id
+
+        def compute_chunk(tile_start, tile_stop):
+            ys, xs = tile_start
+            ye, xe = tile_stop
+            if channel_axis is None:
+                tile = image[ys:ye, xs:xe].compute()
+            else:
+                tile = image[ys:ye, xs:xe, :].compute()
+            # Flows only -- skip Cellpose's own mask dynamics; we integrate and
+            # stitch ourselves. flows[1] = dP [2,H,W], flows[2] = cellprob [H,W].
+            _masks, flows, _styles = self.model.cp.eval(
+                tile,
+                channels=kwargs["channels"],
+                diameter=diameter,
+                normalize=kwargs["normalize"],
+                invert=kwargs["invert"],
+                cellprob_threshold=kwargs["cellprob_threshold"],
+                flow_threshold=0.0,
+                compute_masks=False,
+            )
+            dP = flows[1]
+            cell_prob = flows[2]
+            inds, p = dynamics_local.compute_destinations(
+                dP,
+                cell_prob,
+                cellprob_threshold=kwargs["cellprob_threshold"],
+                niter=niter,
+            )
+            return inds, p
+
+        def write_core(core_start, core_stop, labels):
+            bounds = ChunkBounds(start=list(core_start), stop=list(core_stop))
+            self._tensor_cache.upload_array_chunks(
+                source_id, bounds, np.ascontiguousarray(labels, dtype=np.int32)
+            )
+
+        n_ids = stitch.stitch_lazy_segmentation(
+            full_shape,
+            core_shape,
+            margin,
+            compute_chunk,
+            write_core,
+            min_area=kwargs["min_size"],
+        )
+        logger.info(f"Lazy segmentation produced {n_ids} instances")
+
+        serialized = self._tensor_cache.to_serialized_tensor(source_id)
+        return proto.ProcessResponse(
+            image_data=proto.ImageData(lazy_data=serialized),
+        )
+
     def GetOpNames(self, request, context):
         """Return the available operations and their parameter schemas."""
         with self._server_context(context):
+            default_kwargs = Struct()
+            default_kwargs.update(_DEFAULT_KWARGS)
             return proto.OpNames(
                 names=["cellpose"],
                 op_schemas={
                     "cellpose": proto.OpSchema(
                         description="Cellpose Cyto3 cell segmentation model",
+                        default_kwargs=default_kwargs,
                     ),
                 }
             )
@@ -233,11 +351,21 @@ def main(
     debug: bool = False,
     compression: bool = True,
     gpu: bool = True,
+    cache_dir: str | None = typer.Option(
+        None, help="Directory for the embedded tensor cache. Required to accept "
+                   "lazy (dask) input / return lazy output."),
+    cache_size: str = "32GB",
+    tensor_port: int = 8817,
+    tensor_external_location: str | None = None,
+    tile_size: int = typer.Option(
+        1024, help="Target core (non-overlap) tile size for lazy processing."),
+    overlap_margin: int = typer.Option(
+        64, help="Tile overlap; must exceed the largest expected cell diameter."),
 ):
     model = models.Cellpose(model_type=modeltype, gpu=gpu)
 
     run_server(
-        CellposeServicer(model),
+        CellposeServicer(model, tile_size=tile_size, overlap_margin=overlap_margin),
         port=port,
         workers=workers,
         ip=ip,
@@ -245,6 +373,10 @@ def main(
         token=token,
         log_level="DEBUG" if debug else "INFO",
         compression=compression,
+        cache_dir=cache_dir,
+        cache_size=cache_size,
+        tensor_port=tensor_port,
+        tensor_external_location=tensor_external_location,
     )
 
 
