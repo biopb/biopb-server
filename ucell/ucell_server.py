@@ -4,18 +4,24 @@ import logging
 from pathlib import Path
 
 import biopb.image as proto
+import dask.array as da
 import numpy as np
 import torch
 import typer
 from ml_collections import ConfigDict
+from biopb.image.utils import get_image_data_dim_labels, normalize_array_dims, deserialize_image_data
 
-from ucell.dynamics import compute_masks, remove_bad_flow_masks
+from ucell.dynamics import compute_masks
 from ucell.frm import FRMWrapper
 from ucell.utils import pad_channel, patcherize
 
+# Sibling, import-light service modules (top-level: they sit next to this file
+# at $HOME in the container; tests add the dir to sys.path).
+import stitch
+import dynamics_local
+
 from biopb_image_base import (
     BiopbServicerBase,
-    decode_image_data,
     encode_image,
     run_server,
     parse_kwargs,
@@ -95,10 +101,30 @@ def format_image(img: np.ndarray) -> np.ndarray:
     img = pad_channel(img)
     return img
 
+def get_image_data(image_data: proto.ImageData):
+    """Decode and normalize image data from the request."""
+    image = deserialize_image_data(image_data)
+    dim_labels = get_image_data_dim_labels(image_data)
+    if dim_labels is not None:
+        image = normalize_array_dims(
+            image, dim_labels, ["Z", "Y", "X", "C"],
+        )
+    elif image.ndim in (2, 3, 4):
+        logger.warning("Input image is missing dim_labels; assuming (Z)YX(C) with optional leading singleton Z and trailing C.")
+        if image.ndim == 2:
+            image = image[None, :, :, None]  # Add Z, C dim
+        elif image.ndim == 3:
+            if image.shape[-1] > 3:  # Heuristic: likely ZYX
+                image = image[:, :, :, None]  # Add C dim
+            else:
+                image = image[None, :, :, :]  # Add Z dim
+    else:
+        raise ValueError(f"Input image has {image.ndim} dims but no dim_labels; expected 2D, 3D, or 4D with (Z)YX(C) format.")
+    return image
 
 def process_input(request: proto.DetectionRequest):
     """Process input request and return image and kwargs."""
-    image = decode_image_data(request.image_data)
+    image = get_image_data(request.image_data)
     image = ensure_eager(image)
 
     # Handle 2D images
@@ -180,11 +206,16 @@ def compute_instance_masks(flow: np.ndarray, cell_prob: np.ndarray, kwargs: dict
 class UCellServicer(BiopbServicerBase):
     """UCell servicer implementing ObjectDetection and ProcessImage services."""
 
-    def __init__(self, model, config, device: torch.device):
+    def __init__(self, model, config, device: torch.device,
+                 tile_size: int = 1024, overlap_margin: int = 64):
         super().__init__(use_lock=False)
         self.model = model
         self.config = config
         self.device = device
+        # Lazy-path chunking. overlap_margin must exceed the largest expected
+        # cell diameter for border IDs to stay consistent (see stitch.py).
+        self.tile_size = tile_size
+        self.overlap_margin = overlap_margin
 
     def RunDetection(self, request, context):
         with self._server_context(context):
@@ -215,18 +246,24 @@ class UCellServicer(BiopbServicerBase):
         with self._server_context(context):
             logger.info(f"Received message of size {request.ByteSize()}")
 
-            image = decode_image_data(request.image_data)
+            image = get_image_data(request.image_data)
+
+            kwargs = parse_kwargs(request, _DEFAULT_KWARGS)
+            errors = validate_kwargs(kwargs, _KWARGS_SCHEMA)
+            if errors:
+                raise ValueError("Invalid kwargs: " + "; ".join(errors))
+
+            # Lazy (dask) input may be larger than memory: process it tile-by-tile
+            # and stream a lazy label-mask result back via the tensor cache.
+            if isinstance(image, da.Array):
+                return self._run_lazy(image, kwargs)
+
             image = ensure_eager(image)
 
             if image.shape[0] == 1:  # 2D
                 image = image.squeeze(0)
 
             image = format_image(image)
-
-            kwargs = parse_kwargs(request, _DEFAULT_KWARGS)
-            errors = validate_kwargs(kwargs, _KWARGS_SCHEMA)
-            if errors:
-                raise ValueError("Invalid kwargs: " + "; ".join(errors))
 
             logger.info(f"Received image {image.shape}")
 
@@ -248,6 +285,94 @@ class UCellServicer(BiopbServicerBase):
             logger.info(f"Reply with message of size {response.ByteSize()}")
 
             return response
+
+    def _run_lazy(self, image, kwargs) -> proto.ProcessResponse:
+        """Tile-wise ProcessImage for a lazy (dask) input, larger than memory.
+
+        Allocates the label-mask output at the co-located tensor cache, then
+        runs :func:`stitch.stitch_lazy_segmentation`: each overlapping tile is
+        fetched, run through the model + flow integration to get per-pixel
+        destinations, clustered with cross-tile ID inheritance, cropped to its
+        core, and uploaded -- so neither the input nor the output is ever fully
+        in memory. Returns a ``ProcessResponse`` whose image is a ``lazy_data``
+        reference to the uploaded label mask.
+        """
+        if self._tensor_cache is None:
+            raise ValueError(
+                "Lazy (dask) input requires a tensor cache to write the result. "
+                "Start the server with --cache-dir (or set TENSOR_SERVER_URL)."
+            )
+
+        # Collapse a leading singleton Z (2D images arrive as (1, Y, X[, C])).
+        if image.ndim >= 3 and image.shape[0] == 1:
+            image = image[0]
+
+        if image.ndim == 2:
+            full_shape, channel_axis = tuple(image.shape), None
+        elif image.ndim == 3:
+            full_shape, channel_axis = tuple(image.shape[:2]), 2
+        else:
+            raise ValueError("Lazy processing currently supports 2D images only.")
+
+        margin = self.overlap_margin
+        core_shape = tuple(
+            stitch.uniform_core(full_shape[i], self.tile_size) for i in range(2)
+        )
+        logger.info(
+            f"Lazy ProcessImage: image {image.shape}, core {core_shape}, margin {margin}"
+        )
+
+        from biopb.tensor import ChunkBounds
+
+        template = da.zeros(full_shape, chunks=core_shape, dtype=np.int32)
+        registration = self._tensor_cache.create_array(
+            source_name=None, dim_labels=["Y", "X"], array_template=template
+        )
+        source_id = registration.tensor_descriptor.array_id
+
+        predict_fn = patcherize(self.model.predict, GS=self.config.image_size)
+
+        def compute_chunk(tile_start, tile_stop):
+            ys, xs = tile_start
+            ye, xe = tile_stop
+            if channel_axis is None:
+                tile = image[ys:ye, xs:xe].compute()
+            else:
+                tile = image[ys:ye, xs:xe, :].compute()
+            tile = format_image(tile)
+            with torch.device(self.device):
+                output = predict_fn(tile, kwargs["task_id"])
+            flow = np.moveaxis(output[:, :, :2], -1, 0)
+            cell_prob = output[:, :, 2]
+            # Mirror compute_instance_masks: dP = flow * 4.0, flow_threshold off.
+            inds, p = dynamics_local.compute_destinations(
+                flow * 4.0,
+                cell_prob,
+                cellprob_threshold=kwargs["cellprob_threshold"],
+                niter=_NITER,
+            )
+            return inds, p
+
+        def write_core(core_start, core_stop, labels):
+            bounds = ChunkBounds(start=list(core_start), stop=list(core_stop))
+            self._tensor_cache.upload_array_chunks(
+                source_id, bounds, np.ascontiguousarray(labels, dtype=np.int32)
+            )
+
+        n_ids = stitch.stitch_lazy_segmentation(
+            full_shape,
+            core_shape,
+            margin,
+            compute_chunk,
+            write_core,
+            min_area=kwargs["min_area"],
+        )
+        logger.info(f"Lazy segmentation produced {n_ids} instances")
+
+        serialized = self._tensor_cache.to_serialized_tensor(source_id)
+        return proto.ProcessResponse(
+            image_data=proto.ImageData(lazy_data=serialized),
+        )
 
     def GetOpNames(self, request, context):
         """Return the available operations and their parameter schemas."""
@@ -297,6 +422,16 @@ def main(
     compression: bool = True,
     gpu: bool = True,
     small_model: bool = False,
+    cache_dir: str | None = typer.Option(
+        None, help="Directory for the embedded tensor cache. Required to accept "
+                   "lazy (dask) input / return lazy output."),
+    cache_size: str = "32GB",
+    tensor_port: int = 8817,
+    tensor_external_location: str | None = None,
+    tile_size: int = typer.Option(
+        1024, help="Target core (non-overlap) tile size for lazy processing."),
+    overlap_margin: int = typer.Option(
+        64, help="Tile overlap; must exceed the largest expected cell diameter."),
 ):
     config = get_config()
     if small_model:
@@ -311,7 +446,8 @@ def main(
         logger.warning("WARNING: No GPU configuration. This might be very slow...")
 
     run_server(
-        UCellServicer(model, config, device),
+        UCellServicer(model, config, device,
+                      tile_size=tile_size, overlap_margin=overlap_margin),
         port=port,
         workers=workers,
         ip=ip,
@@ -319,6 +455,10 @@ def main(
         token=token,
         log_level="DEBUG" if debug else "INFO",
         compression=compression,
+        cache_dir=cache_dir,
+        cache_size=cache_size,
+        tensor_port=tensor_port,
+        tensor_external_location=tensor_external_location,
     )
 
 
