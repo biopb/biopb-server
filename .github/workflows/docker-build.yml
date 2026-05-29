@@ -112,8 +112,8 @@ jobs:
         if: needs.prepare.outputs.push == 'true'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: jiyuuchc
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
       - name: Extract metadata
         id: meta
@@ -132,8 +132,8 @@ jobs:
           push: ${{ needs.prepare.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.build_dir }}
+          cache-to: type=gha,scope=${{ matrix.build_dir }},mode=max
           platforms: linux/amd64
           build-args: |
             VERSION=${{ steps.version.outputs.version }}

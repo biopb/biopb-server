@@ -1,7 +1,29 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+# This repo is a collection of independent Docker services, not a shippable
+# library. The [project] table exists only so `pip install -e ".[test]"` can
+# install the test dependencies (notably biopb-image-base) into a dev venv.
+[project]
+name = "biopb-server-tests"
+version = "0.0.0"
+description = "Dev/test harness for the biopb-server Docker services"
+requires-python = ">=3.10"
+
+# No importable package lives at the repo root (services are separate dirs and
+# load their ML stacks only inside containers); keep setuptools from trying to
+# auto-discover one.
+[tool.setuptools]
+py-modules = []
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+# "ucell" lets unit tests import the service's import-light modules (stitch,
+# dynamics_local) by the same top-level names they use inside the container.
+pythonpath = [".", "ucell"]
 markers = [
+    "unit: GPU-free, container-free tests of shared biopb_image_base logic (fast)",
     "smoke: basic connectivity tests (fast)",
     "integration: service-specific tests (slower)",
     "contract: API compliance tests",
@@ -29,4 +51,11 @@ test = [
     "numpy",
     "imageio",
     "typer",
+    # Base utilities used by every *_server.py. Not in PyPI; installed from the
+    # biopb/biopb monorepo subdirectory. Pin matches the base image tag in the
+    # service Dockerfiles (FROM jiyuuchc/biopb-image-base:e7aa1fc) so the local
+    # module is identical to what runs inside the containers. NOTE: the package
+    # subdirectory was renamed biopb-image-server/ -> biopb-image-runtime/ --
+    # update the #subdirectory= if you bump to an older/newer commit.
+    "biopb-image-base @ git+https://github.com/biopb/biopb.git@e7aa1fc#subdirectory=biopb-image-runtime",
 ]

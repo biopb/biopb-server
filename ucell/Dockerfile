@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-image-base:8771c98
+FROM jiyuuchc/biopb-image-base:e7aa1fc
 
 # Install git for pip install from git repos
 USER root
