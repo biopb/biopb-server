@@ -38,8 +38,8 @@ jobs:
           PUSH="${{ inputs.push }}"
 
           if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
-            # Build all services
-            BUILD_DIRS=$(echo "$ALL_DIRS" | jq -R . | jq -s .)
+            # Build all services (compact JSON: single-line for $GITHUB_OUTPUT)
+            BUILD_DIRS=$(echo "$ALL_DIRS" | jq -R . | jq -sc .)
           else
             # Build specified services (comma-separated)
             BUILD_DIRS=$(echo "$INPUT" | tr ',' '\n' | while read dir; do
@@ -49,7 +49,7 @@ jobs:
               else
                 echo "Warning: $dir/Dockerfile not found, skipping" >&2
               fi
-            done | jq -s .)
+            done | jq -sc .)
           fi
 
           echo "build_dirs=$BUILD_DIRS" >> $GITHUB_OUTPUT
@@ -92,8 +92,8 @@ jobs:
         if: needs.prepare.outputs.push == 'true'
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: jiyuuchc
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
 
       - name: Extract metadata
         id: meta
@@ -112,8 +112,8 @@ jobs:
           push: ${{ needs.prepare.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.build_dir }}
+          cache-to: type=gha,scope=${{ matrix.build_dir }},mode=max
           platforms: linux/amd64
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
