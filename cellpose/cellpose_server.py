@@ -141,6 +141,11 @@ def process_input(request: proto.DetectionRequest):
     if errors:
         raise ValueError("Invalid kwargs: " + "; ".join(errors))
 
+    # async_result is a lazy-output control flag (ProcessImage only); it has no
+    # meaning for RunDetection and is not a Cellpose model kwarg -- drop it so it
+    # is not forwarded to model.eval().
+    kwargs.pop("async_result", None)
+
     if image.shape[0] == 1: # 2D
         image = image.squeeze(0)
 
