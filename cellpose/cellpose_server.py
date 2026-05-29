@@ -8,7 +8,8 @@ import typer
 from google.protobuf.struct_pb2 import Struct
 
 from cellpose import models
-from biopb_image_base import decode_image_data, encode_image, BiopbServicerBase, run_server, parse_kwargs, validate_kwargs, ensure_eager
+from biopb.image.utils import deserialize_image_data, get_image_data_dim_labels, normalize_array_dims
+from biopb_image_base import encode_image, BiopbServicerBase, run_server, parse_kwargs, validate_kwargs, ensure_eager
 
 # Sibling, import-light service modules (top-level: they sit next to this file
 # at $HOME in the container; tests add the dir to sys.path).
@@ -82,10 +83,36 @@ _CELLPOSE_kwargs_SCHEMA = {
 }
 
 
+def get_image_data(image_data: proto.ImageData):
+    """Decode and normalize image data to (Z, Y, X, C).
+
+    Uses the request's dim_labels when present; otherwise falls back to a
+    heuristic for (Z)YX(C) with an optional leading singleton Z and trailing C.
+    """
+    image = deserialize_image_data(image_data)
+    dim_labels = get_image_data_dim_labels(image_data)
+    if dim_labels is not None:
+        image = normalize_array_dims(image, dim_labels, ["Z", "Y", "X", "C"])
+    elif image.ndim in (2, 3, 4):
+        logger.warning("Input image is missing dim_labels; assuming (Z)YX(C) "
+                       "with optional leading singleton Z and trailing C.")
+        if image.ndim == 2:
+            image = image[None, :, :, None]  # add Z, C
+        elif image.ndim == 3:
+            if image.shape[-1] > 3:  # heuristic: likely ZYX
+                image = image[:, :, :, None]  # add C
+            else:
+                image = image[None, :, :, :]  # add Z
+    else:
+        raise ValueError(f"Input image has {image.ndim} dims but no dim_labels; "
+                         "expected 2D, 3D, or 4D with (Z)YX(C) format.")
+    return image
+
+
 def process_input(request: proto.DetectionRequest):
     settings = request.detection_settings
 
-    image = decode_image_data(request.image_data)
+    image = get_image_data(request.image_data)
     image = ensure_eager(image)
 
     pixels = request.image_data.pixels
@@ -204,7 +231,7 @@ class CellposeServicer(BiopbServicerBase):
         with self._server_context(context):
             logger.info(f"Received message of size {request.ByteSize()}")
 
-            image = decode_image_data(request.image_data)
+            image = get_image_data(request.image_data)
 
             # Start with default kwargs, merge request kwargs, validate.
             kwargs = parse_kwargs(request, _DEFAULT_KWARGS.copy())
