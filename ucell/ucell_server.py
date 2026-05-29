@@ -1,6 +1,7 @@
 """UCell gRPC server using biopb_image_base utilities."""
 
 import logging
+import threading
 from pathlib import Path
 
 import biopb.image as proto
@@ -39,6 +40,7 @@ _DEFAULT_KWARGS = {
     "task_id": 0,
     "cellprob_threshold": -0.2,
     "min_area": 5,
+    "async_result": False,
 }
 
 # Validation schema for ucell kwargs
@@ -58,6 +60,13 @@ _KWARGS_SCHEMA = {
         "type": "int",
         "minimum": 0,
         "description": "Minimum cell area",
+    },
+    "async_result": {
+        "type": "bool",
+        "description": "Lazy input only: return the result tensor handle "
+                       "immediately and compute in the background. The client "
+                       "must poll upload status (wait_for_upload_ready_pb) "
+                       "before reading.",
     },
 }
 
@@ -217,6 +226,10 @@ class UCellServicer(BiopbServicerBase):
         # cell diameter for border IDs to stay consistent (see stitch.py).
         self.tile_size = tile_size
         self.overlap_margin = overlap_margin
+        # Serializes ProcessImage GPU inference. An async lazy job runs in a
+        # background thread after Run returns, so this lock keeps it from racing
+        # a concurrent inference on the single shared model.
+        self._model_lock = threading.Lock()
 
     def RunDetection(self, request, context):
         with self._server_context(context):
@@ -254,10 +267,13 @@ class UCellServicer(BiopbServicerBase):
             if errors:
                 raise ValueError("Invalid kwargs: " + "; ".join(errors))
 
+            # Control parameter, not a model kwarg.
+            async_result = bool(kwargs.pop("async_result", False))
+
             # Lazy (dask) input may be larger than memory: process it tile-by-tile
             # and stream a lazy label-mask result back via the tensor cache.
             if isinstance(image, da.Array):
-                return self._run_lazy(image, kwargs)
+                return self._run_lazy(image, kwargs, async_result=async_result)
 
             image = ensure_eager(image)
 
@@ -269,7 +285,7 @@ class UCellServicer(BiopbServicerBase):
             logger.info(f"Received image {image.shape}")
 
             predict_fn = patcherize(self.model.predict, GS=self.config.image_size)
-            with torch.device(self.device):
+            with self._model_lock, torch.device(self.device):
                 output = predict_fn(image, kwargs["task_id"])
 
             flow = np.moveaxis(output[:, :, :2], -1, 0)
@@ -287,7 +303,7 @@ class UCellServicer(BiopbServicerBase):
 
             return response
 
-    def _run_lazy(self, image, kwargs) -> proto.ProcessResponse:
+    def _run_lazy(self, image, kwargs, async_result=False) -> proto.ProcessResponse:
         """Tile-wise ProcessImage for a lazy (dask) input, larger than memory.
 
         Allocates the label-mask output at the co-located tensor cache, then
@@ -295,8 +311,13 @@ class UCellServicer(BiopbServicerBase):
         fetched, run through the model + flow integration to get per-pixel
         destinations, clustered with cross-tile ID inheritance, cropped to its
         core, and uploaded -- so neither the input nor the output is ever fully
-        in memory. Returns a ``ProcessResponse`` whose image is a ``lazy_data``
-        reference to the uploaded label mask.
+        in memory.
+
+        With ``async_result=False`` (default) the stitch runs inline and the
+        returned ``lazy_data`` is a completed result. With ``async_result=True``
+        the stitch runs on a background thread and the registration handle is
+        returned immediately (avoiding a long-held RPC / client disconnect); the
+        client must poll ``wait_for_upload_ready_pb`` before reading.
         """
         if self._tensor_cache is None:
             raise ValueError(
@@ -341,7 +362,9 @@ class UCellServicer(BiopbServicerBase):
             else:
                 tile = image[ys:ye, xs:xe, :].compute()
             tile = format_image(tile)
-            with torch.device(self.device):
+            # Lock guards the shared GPU model (a background async job may run
+            # concurrently with another request's inference).
+            with self._model_lock, torch.device(self.device):
                 output = predict_fn(tile, kwargs["task_id"])
             flow = np.moveaxis(output[:, :, :2], -1, 0)
             cell_prob = output[:, :, 2]
@@ -360,14 +383,34 @@ class UCellServicer(BiopbServicerBase):
                 source_id, bounds, np.ascontiguousarray(labels, dtype=np.int32)
             )
 
-        n_ids = stitch.stitch_lazy_segmentation(
-            full_shape,
-            core_shape,
-            margin,
-            compute_chunk,
-            write_core,
-            min_area=kwargs["min_area"],
-        )
+        def run_stitch():
+            return stitch.stitch_lazy_segmentation(
+                full_shape, core_shape, margin, compute_chunk, write_core,
+                min_area=kwargs["min_area"],
+            )
+
+        if async_result:
+            # Return the registration handle now; compute + upload in the
+            # background. The source flips to READY once every core is uploaded.
+            def worker():
+                try:
+                    n_ids = run_stitch()
+                    logger.info(f"[async] lazy segmentation produced {n_ids} "
+                                f"instances for source {source_id}")
+                except Exception:
+                    # No FAILED-marking API on the cache; a crashed job leaves
+                    # the source UPLOADING, so the client's poll will time out.
+                    logger.exception(f"[async] lazy segmentation FAILED for "
+                                     f"source {source_id}; client poll will time out")
+
+            threading.Thread(target=worker, name=f"lazy-{source_id}").start()
+            logger.info(f"Lazy ProcessImage (async): returning handle for "
+                        f"source {source_id}; computing in background")
+            return proto.ProcessResponse(
+                image_data=proto.ImageData(lazy_data=registration),
+            )
+
+        n_ids = run_stitch()
         logger.info(f"Lazy segmentation produced {n_ids} instances")
 
         serialized = self._tensor_cache.to_serialized_tensor(source_id)

@@ -1,4 +1,5 @@
 import logging
+import threading
 
 import biopb.image as proto
 import dask.array as da
@@ -29,6 +30,7 @@ _DEFAULT_KWARGS = {
     "normalize": True,
     "invert": False,
     "min_size": 15,
+    "async_result": False,
 }
 
 # Validation schema for cellpose kwargs
@@ -69,6 +71,13 @@ _CELLPOSE_kwargs_SCHEMA = {
         "type": "int",
         "minimum": 0,
         "description": "Minimum cell size",
+    },
+    "async_result": {
+        "type": "bool",
+        "description": "Lazy input only: return the result tensor handle "
+                       "immediately and compute in the background. The client "
+                       "must poll upload status (wait_for_upload_ready_pb) "
+                       "before reading.",
     },
 }
 
@@ -165,6 +174,11 @@ class CellposeServicer(BiopbServicerBase):
         # additionally floored from the request diameter at run time.
         self.tile_size = tile_size
         self.overlap_margin = overlap_margin
+        # Serializes ProcessImage GPU inference. _server_context's lock guards
+        # RPC-vs-RPC, but an async lazy job runs in a background thread *after*
+        # Run returns, so this lock is needed to keep it from racing a
+        # concurrent (eager or lazy) inference on the single shared model.
+        self._model_lock = threading.Lock()
 
     def RunDetection(self, request, context):
         with self._server_context(context):
@@ -198,10 +212,13 @@ class CellposeServicer(BiopbServicerBase):
             if errors:
                 raise ValueError("Invalid kwargs: " + "; ".join(errors))
 
+            # Control parameter, not a model kwarg -- remove before model.eval.
+            async_result = bool(kwargs.pop("async_result", False))
+
             # Lazy (dask) input may be larger than memory: process it tile-by-tile
             # and stream a lazy label-mask result back via the tensor cache.
             if isinstance(image, da.Array):
-                return self._run_lazy(image, kwargs)
+                return self._run_lazy(image, kwargs, async_result=async_result)
 
             image = ensure_eager(image)
 
@@ -212,7 +229,8 @@ class CellposeServicer(BiopbServicerBase):
 
             logger.info(f"Decoded image {image.shape}")
 
-            mask = self.model.eval(image, **kwargs)[0]
+            with self._model_lock:
+                mask = self.model.eval(image, **kwargs)[0]
 
             response = proto.ProcessResponse(
                 image_data=encode_image(mask),
@@ -222,7 +240,7 @@ class CellposeServicer(BiopbServicerBase):
 
             return response
 
-    def _run_lazy(self, image, kwargs) -> proto.ProcessResponse:
+    def _run_lazy(self, image, kwargs, async_result=False) -> proto.ProcessResponse:
         """Tile-wise ProcessImage for a lazy (dask) input, larger than memory.
 
         Mirrors the ucell lazy path: allocate the label-mask output at the
@@ -231,8 +249,13 @@ class CellposeServicer(BiopbServicerBase):
         network (flows only, ``compute_masks=False``) to get the spatial flow
         ``dP`` and ``cellprob``, integrated to per-pixel destinations, clustered
         with cross-tile ID inheritance, cropped to its core, and uploaded -- so
-        neither the input nor the output is ever fully in memory. Returns a
-        ``ProcessResponse`` whose image is a ``lazy_data`` reference.
+        neither the input nor the output is ever fully in memory.
+
+        With ``async_result=False`` (default) the stitch runs inline and the
+        returned ``lazy_data`` is a completed result. With ``async_result=True``
+        the stitch runs on a background thread and the registration handle is
+        returned immediately (avoiding a long-held RPC / client disconnect); the
+        client must poll ``wait_for_upload_ready_pb`` before reading.
         """
         if self._tensor_cache is None:
             raise ValueError(
@@ -283,16 +306,19 @@ class CellposeServicer(BiopbServicerBase):
                 tile = image[ys:ye, xs:xe, :].compute()
             # Flows only -- skip Cellpose's own mask dynamics; we integrate and
             # stitch ourselves. flows[1] = dP [2,H,W], flows[2] = cellprob [H,W].
-            _masks, flows, _styles = self.model.cp.eval(
-                tile,
-                channels=kwargs["channels"],
-                diameter=diameter,
-                normalize=kwargs["normalize"],
-                invert=kwargs["invert"],
-                cellprob_threshold=kwargs["cellprob_threshold"],
-                flow_threshold=0.0,
-                compute_masks=False,
-            )
+            # Lock guards the shared GPU model (a background async job may run
+            # concurrently with another request's inference).
+            with self._model_lock:
+                _masks, flows, _styles = self.model.cp.eval(
+                    tile,
+                    channels=kwargs["channels"],
+                    diameter=diameter,
+                    normalize=kwargs["normalize"],
+                    invert=kwargs["invert"],
+                    cellprob_threshold=kwargs["cellprob_threshold"],
+                    flow_threshold=0.0,
+                    compute_masks=False,
+                )
             dP = flows[1]
             cell_prob = flows[2]
             inds, p = dynamics_local.compute_destinations(
@@ -309,14 +335,34 @@ class CellposeServicer(BiopbServicerBase):
                 source_id, bounds, np.ascontiguousarray(labels, dtype=np.int32)
             )
 
-        n_ids = stitch.stitch_lazy_segmentation(
-            full_shape,
-            core_shape,
-            margin,
-            compute_chunk,
-            write_core,
-            min_area=kwargs["min_size"],
-        )
+        def run_stitch():
+            return stitch.stitch_lazy_segmentation(
+                full_shape, core_shape, margin, compute_chunk, write_core,
+                min_area=kwargs["min_size"],
+            )
+
+        if async_result:
+            # Return the registration handle now; compute + upload in the
+            # background. The source flips to READY once every core is uploaded.
+            def worker():
+                try:
+                    n_ids = run_stitch()
+                    logger.info(f"[async] lazy segmentation produced {n_ids} "
+                                f"instances for source {source_id}")
+                except Exception:
+                    # No FAILED-marking API on the cache; a crashed job leaves
+                    # the source UPLOADING, so the client's poll will time out.
+                    logger.exception(f"[async] lazy segmentation FAILED for "
+                                     f"source {source_id}; client poll will time out")
+
+            threading.Thread(target=worker, name=f"lazy-{source_id}").start()
+            logger.info(f"Lazy ProcessImage (async): returning handle for "
+                        f"source {source_id}; computing in background")
+            return proto.ProcessResponse(
+                image_data=proto.ImageData(lazy_data=registration),
+            )
+
+        n_ids = run_stitch()
         logger.info(f"Lazy segmentation produced {n_ids} instances")
 
         serialized = self._tensor_cache.to_serialized_tensor(source_id)
