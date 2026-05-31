@@ -104,3 +104,106 @@ class TestUnifmrService:
         with pytest.raises(grpc.RpcError) as exc:
             stub.RunDetection(request_msg, timeout=30)
         assert exc.value.code() == grpc.StatusCode.UNIMPLEMENTED
+
+
+# --------------------------------------------------------------------------- #
+# Lazy (chunked) path. Needs a cache-enabled container with the tensor (Flight)
+# port exposed; the client sends an inline dask array (debug_pickled_array) and
+# reads the assembled result back over Flight. Set UNIFMR_TEST_CPU=1 to run the
+# container on CPU (e.g. on GPUs too old for the prebuilt torch wheels).
+# --------------------------------------------------------------------------- #
+_LAZY_PORT = 50071
+_LAZY_TPORT = 8837
+
+
+@pytest.fixture(scope="module")
+def unifmr_cache_service():
+    import subprocess
+    import time
+
+    if subprocess.run(["docker", "image", "inspect", "unifmr:test"],
+                      capture_output=True).returncode != 0:
+        pytest.skip("Image unifmr:test not found - build it first")
+
+    name = "biopb-test-unifmr-cache"
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    cpu = os.environ.get("UNIFMR_TEST_CPU")
+    gpu_args = [] if cpu else ["--gpus=all"]
+    server_args = [
+        "--no-token", "--debug",
+        "--cache-dir", "/tmp/tcache",
+        "--tensor-external-location", f"grpc://127.0.0.1:{_LAZY_TPORT}",
+        "--tile-size", "32",
+    ] + (["--no-gpu"] if cpu else [])
+    proc = subprocess.Popen(
+        ["docker", "run", "--rm", "--name", name, *gpu_args,
+         "-p", f"{_LAZY_PORT}:50051", "-p", f"{_LAZY_TPORT}:8817",
+         "unifmr:test", *server_args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.time() + 60
+        ok = False
+        while time.time() < deadline:
+            if subprocess.run(["docker", "exec", name, "grpc_health_probe",
+                               "-addr=localhost:50051"], capture_output=True).returncode == 0:
+                ok = True
+                break
+            time.sleep(2)
+        if not ok:
+            pytest.skip("unifmr cache service failed to become healthy")
+        yield {"port": _LAZY_PORT, "tensor_location": f"grpc://127.0.0.1:{_LAZY_TPORT}"}
+    finally:
+        subprocess.run(["docker", "stop", name], capture_output=True)
+        proc.terminate()
+
+
+def _lazy_run(svc, op, img, chunks, async_result=False):
+    """Send a dask array as lazy input; return the assembled numpy result."""
+    os.environ.setdefault("BIOPB_SHM_TRANSFER_DISABLED", "1")
+    import dask.array as da
+    from biopb.tensor.client import make_debug_serialized_tensor
+    from biopb.tensor import TensorFlightClient
+    from google.protobuf.struct_pb2 import Struct
+
+    stub = proto.ProcessImageStub(grpc.insecure_channel(f"127.0.0.1:{svc['port']}"))
+    st = make_debug_serialized_tensor(da.from_array(img, chunks=chunks), array_id="in")
+    kwargs = None
+    if async_result:
+        kwargs = Struct()
+        kwargs["async_result"] = True
+    resp = stub.Run(
+        proto.ProcessRequest(image_data=proto.ImageData(lazy_data=st), op_name=op, kwargs=kwargs),
+        timeout=360,
+    )
+    assert resp.image_data.HasField("lazy_data")
+    if async_result:
+        TensorFlightClient(svc["tensor_location"]).wait_for_upload_ready_pb(
+            resp.image_data.lazy_data, timeout_seconds=180)
+    return np.asarray(deserialize_image_data(resp.image_data))
+
+
+class TestUnifmrLazy:
+    @pytest.mark.integration
+    def test_lazy_sr_sync(self, unifmr_cache_service):
+        """SR over a multi-chunk lazy input assembles to a 2x output."""
+        img = (np.random.default_rng(3).random((96, 96)) * 255).astype(np.float32)
+        out = _lazy_run(unifmr_cache_service, "sr_factin", img, chunks=(48, 48))
+        assert out.shape == (192, 192)
+        assert np.isfinite(out).all()
+
+    @pytest.mark.integration
+    def test_lazy_stack(self, unifmr_cache_service):
+        """Denoising a lazy Z-stack tiles the Y/X plane and keeps shape."""
+        img = (np.random.default_rng(4).random((4, 96, 96)) * 1000).astype(np.float32)
+        out = _lazy_run(unifmr_cache_service, "denoise_planaria", img, chunks=(4, 48, 48))
+        assert out.shape == (4, 96, 96)
+        assert np.isfinite(out).all()
+
+    @pytest.mark.integration
+    def test_lazy_async(self, unifmr_cache_service):
+        """async_result returns a handle; result is readable once READY."""
+        img = (np.random.default_rng(5).random((64, 64)) * 255).astype(np.float32)
+        out = _lazy_run(unifmr_cache_service, "sr_factin", img, chunks=(32, 32), async_result=True)
+        assert out.shape == (128, 128)
+        assert np.isfinite(out).all()

@@ -19,9 +19,10 @@ py-modules = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# "ucell" lets unit tests import the service's import-light modules (stitch,
-# dynamics_local) by the same top-level names they use inside the container.
-pythonpath = [".", "ucell"]
+# "ucell"/"unifmr" let unit tests import each service's import-light modules
+# (stitch, dynamics_local; tiling, heads) by the same top-level names they use
+# inside the container.
+pythonpath = [".", "ucell", "unifmr"]
 markers = [
     "unit: GPU-free, container-free tests of shared biopb_image_base logic (fast)",
     "smoke: basic connectivity tests (fast)",
