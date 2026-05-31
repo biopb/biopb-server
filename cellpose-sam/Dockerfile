@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-image-base:e7aa1fc
+FROM jiyuuchc/biopb-image-base:6c6053a
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends git \

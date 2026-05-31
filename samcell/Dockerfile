@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-image-base:e7aa1fc
+FROM jiyuuchc/biopb-image-base:6c6053a
 
 WORKDIR $HOME
 
