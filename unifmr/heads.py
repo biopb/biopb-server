@@ -211,7 +211,7 @@ HEADS: dict[str, HeadSpec] = {
             ("super-resolution", "BioSR", "microtubules"),
         ),
         HeadSpec(
-            "denoise_planaria", "SwinIRDenoising_Planaria/model_best.pt", 1, 1, 3,
+            "denoise_planaria", "SwinIRDenoising_Planaria/model_best15.pt", 1, 1, 3,
             _predict_denoise,
             "Denoising of 3D fluorescence stacks of whole Planaria (flatworm). Give it "
             "a low-SNR Z-stack (Z, Y, X); it returns a denoised stack of the same shape, "

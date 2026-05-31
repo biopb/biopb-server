@@ -2,9 +2,16 @@ FROM jiyuuchc/biopb-image-base:6c6053a
 
 WORKDIR $HOME
 
-# Install Python dependencies (torch from the CUDA 12.8 wheel index).
+# Install Python dependencies (torch from the CUDA 12.8 wheel index). The large
+# CUDA runtime wheels (torch/cudnn/cufft, ~200 MB-1 GB each) can arrive truncated
+# and fail pip's hash check, so retry. Use --no-cache-dir so a corrupted wheel is
+# never reused from cache on the next attempt (which would re-fail indefinitely).
 COPY --chown=biopb:biopb requirements.txt ./
-RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 -r requirements.txt
+RUN ok=; for i in 1 2 3 4 5; do \
+        if pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu128 -r requirements.txt; then ok=1; break; fi; \
+        echo "pip install attempt $i failed; retrying after 10s"; sleep 10; \
+    done; \
+    [ "$ok" = 1 ]
 
 # Optional: build for CPUs without SSE4.2/AVX (e.g. old AMD Opterons). See
 # ../cellpose/BUILD_NO_SSE42.md. pyarrow's wheels are compiled with an SSE4.2
