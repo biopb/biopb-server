@@ -32,3 +32,11 @@ docker run --gpus=all -p 50051:50051 <image-name> --token
 
 Note: Default transport is HTTP (no encryption). To use HTTPS, run container in "--local" mode and setup a reverse proxy server, e.g., Nginx, to forward RPC calls.
 
+## License
+
+This repository is licensed under the MIT License (see [LICENSE](LICENSE)), with
+one exception: the `unifmr/` service vendors model code from the GPL-3.0-licensed
+[UNiFMIR](https://github.com/cxm12/UNiFMIR) project, so the `unifmr/` directory is
+distributed under the GNU GPL v3.0. See [unifmr/LICENSE](unifmr/LICENSE) and
+[unifmr/NOTICE](unifmr/NOTICE) for details.
+
