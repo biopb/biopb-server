@@ -1,0 +1,25 @@
+unifmr service — licensing notice
+=================================
+
+This service wraps the UNiFMIR fluorescence-microscopy image-restoration model.
+
+The Python package under `unifmr/model/` (swinir.py, common.py, attention.py,
+enlcn.py, __init__.py) is vendored — with light cleanup of debug instrumentation —
+from the UNiFMIR project:
+
+    UNiFMIR — "Pretraining a foundation model for generalizable fluorescence
+    microscopy-based image restoration"
+    https://github.com/cxm12/UNiFMIR
+    Copyright (C) the UNiFMIR authors.
+
+UNiFMIR is licensed under the GNU General Public License v3.0. Because this
+service incorporates and distributes that GPL-3.0 code, the `unifmr/` directory
+as a whole is distributed under the GNU GPL v3.0; see the accompanying LICENSE
+file for the full terms.
+
+This GPL-3.0 scope applies to the `unifmr/` service directory only. Other
+services in this repository are independent works and are not covered by this
+notice or LICENSE.
+
+The model weights/checkpoints are downloaded at build time from the UNiFMIR
+release and are subject to the UNiFMIR project's own terms.
