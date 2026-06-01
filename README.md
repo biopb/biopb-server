@@ -6,6 +6,7 @@ The folder contains code for building the docker images of biopb algorithm serve
   - jiyuuchc/cellpose: [Cellpose Cyto3](https://cellpose.com)
   - jiyuuchc/cellpose-sam: [Cellpose-SAM](https://cellpose.com)
   - jiyuuchc/ucell: [ucell](https://github.com/jiyuuchc/ucell)
+  - jiyuuchc/unifmir: [UNiFMIR](https://github.com/cxm12/UNiFMIR)
 
 ### Run
 

@@ -44,5 +44,5 @@ EXPOSE 50051
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD grpc_health_probe -addr=localhost:50051 || exit 1
 
-ENTRYPOINT ["python", "./unifmr_server.py"]
+ENTRYPOINT ["python", "./unifmir_server.py"]
 CMD ["--no-token", "--ckpt-dir", "./experiment"]
