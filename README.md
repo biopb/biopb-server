@@ -21,9 +21,6 @@ docker run --gpus=all -p 50051:50051 <image-name>
 # running on a different port
 docker run --gpus=all -p 8888:50051 <image-name>
 
-# only accepting local RPC call
-docker run --gpus=all -p 50051:50051 <image-name> --local
-
 # debug mode
 docker run --gpus=all -p 50051:50051 <image-name> --no-token --debug
 
@@ -31,7 +28,7 @@ docker run --gpus=all -p 50051:50051 <image-name> --no-token --debug
 docker run --gpus=all -p 50051:50051 <image-name> --token
 ```
 
-Note: Default transport is HTTP (no encryption). To use HTTPS, run container in "--local" mode and setup a reverse proxy server, e.g., Nginx, to forward RPC calls.
+Note: Default transport is HTTP (no encryption). To use TLS, setup a reverse proxy server, e.g., Nginx, to forward gRPC calls.
 
 ## License
 
