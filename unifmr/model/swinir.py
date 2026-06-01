@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from model.layers import DropPath, to_2tuple, trunc_normal_
 from model.enlcn import ENLCN
 from typing import Optional, Tuple
 

@@ -11,7 +11,7 @@ by its own checkpoint. Phase 1 exposes only the 2D image->image families:
 
 The model and the per-task pre/post-processing are ported faithfully from the
 upstream ``app.py`` (the gradio demo), but the csbdeep/TensorFlow normalization
-helpers are reimplemented inline here so the service only needs torch/timm/einops.
+helpers are reimplemented inline here so the service only needs torch/einops.
 """
 
 from __future__ import annotations

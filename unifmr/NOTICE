@@ -12,6 +12,15 @@ from the UNiFMIR project:
     https://github.com/cxm12/UNiFMIR
     Copyright (C) the UNiFMIR authors.
 
+`unifmr/model/layers.py` is a separate small file vendored from the
+`timm` (pytorch-image-models) project — three layer helpers used by swinir.py
+(`to_2tuple`, `trunc_normal_`, `DropPath`):
+
+    timm — https://github.com/huggingface/pytorch-image-models
+    Copyright 2020 Ross Wightman, licensed under Apache License 2.0.
+
+The Apache-2.0 license is compatible with the GPL-3.0 scope below.
+
 UNiFMIR is licensed under the GNU General Public License v3.0. Because this
 service incorporates and distributes that GPL-3.0 code, the `unifmr/` directory
 as a whole is distributed under the GNU GPL v3.0; see the accompanying LICENSE
