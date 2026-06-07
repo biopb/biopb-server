@@ -17,11 +17,6 @@ from ucell.dynamics import compute_masks
 from ucell.frm import FRMWrapper
 from ucell.utils import pad_channel, patcherize
 
-# Sibling, import-light service modules (top-level: they sit next to this file
-# at $HOME in the container; tests add the dir to sys.path).
-import stitch
-import dynamics_local
-
 from biopb_image_base import (
     BiopbServicerBase,
     encode_image,
@@ -30,6 +25,9 @@ from biopb_image_base import (
     validate_kwargs,
     ensure_eager,
 )
+# Shared border-region reconciliation for lazy/tiled input (issue #1): single
+# source of truth in biopb_image_base, formerly duplicated as local modules.
+from biopb_image_base import stitch, dynamics_local
 
 app = typer.Typer(pretty_exceptions_enable=False)
 

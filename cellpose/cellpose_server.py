@@ -10,11 +10,9 @@ from google.protobuf.struct_pb2 import Struct
 from cellpose import models
 from biopb.image.utils import deserialize_image_data, get_image_data_dim_labels, normalize_array_dims
 from biopb_image_base import encode_image, BiopbServicerBase, run_server, parse_kwargs, validate_kwargs, ensure_eager
-
-# Sibling, import-light service modules (top-level: they sit next to this file
-# at $HOME in the container; tests add the dir to sys.path).
-import stitch
-import dynamics_local
+# Shared border-region reconciliation for lazy/tiled input (issue #1): single
+# source of truth in biopb_image_base, formerly duplicated as local modules.
+from biopb_image_base import stitch, dynamics_local
 
 app = typer.Typer(pretty_exceptions_enable=False)
 

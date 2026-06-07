@@ -1,4 +1,4 @@
-"""Tests for the unifmr (UNiFMIR restoration) service.
+"""Tests for the unifmir (UNiFMIR restoration) service.
 
 UNiFMIR is a restoration model (image -> image), so the suite is built around
 ``ProcessImage.Run`` rather than the detection-centric ``ServiceTestBase``.
@@ -16,7 +16,7 @@ import biopb.image as proto
 from biopb.image.utils import serialize_from_numpy_to_image_data, deserialize_image_data
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
-_UNIFMR_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "unifmr")
+_UNIFMIR_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "unifmir")
 
 
 # --------------------------------------------------------------------------- #
@@ -29,7 +29,7 @@ def test_vendored_swinir_forward():
     pytest.importorskip("timm")
     pytest.importorskip("einops")
 
-    sys.path.insert(0, os.path.abspath(_UNIFMR_DIR))
+    sys.path.insert(0, os.path.abspath(_UNIFMIR_DIR))
     try:
         from model.swinir import swinir as SwinIR
     finally:
@@ -43,29 +43,29 @@ def test_vendored_swinir_forward():
 
 
 # --------------------------------------------------------------------------- #
-# Service tests (require a pre-built unifmr:test image).
+# Service tests (require a pre-built unifmir:test image).
 # --------------------------------------------------------------------------- #
-class TestUnifmrService:
+class TestUnifmirService:
     @pytest.mark.smoke
-    def test_health_check(self, unifmr_service):
-        stub = health_pb2_grpc.HealthStub(unifmr_service.channel())
+    def test_health_check(self, unifmir_service):
+        stub = health_pb2_grpc.HealthStub(unifmir_service.channel())
         response = stub.Check(health_pb2.HealthCheckRequest(), timeout=5)
         assert response.status == health_pb2.HealthCheckResponse.SERVING
 
     @pytest.mark.smoke
-    def test_get_op_names(self, unifmr_service):
+    def test_get_op_names(self, unifmir_service):
         from google.protobuf.empty_pb2 import Empty
 
-        stub = unifmr_service.process_stub()
+        stub = unifmir_service.process_stub()
         response = stub.GetOpNames(Empty(), timeout=10)
         assert "sr_factin" in response.names
         assert "denoise_planaria" in response.names
         assert "isotropic_liver" in response.names
 
     @pytest.mark.integration
-    def test_sr_process_roundtrip(self, unifmr_service):
+    def test_sr_process_roundtrip(self, unifmir_service):
         """SR (sr_factin) returns a finite 2x-upscaled 2D image."""
-        stub = unifmr_service.process_stub()
+        stub = unifmir_service.process_stub()
         image = (np.random.default_rng(0).random((64, 64)) * 255).astype(np.float32)
 
         request_msg = proto.ProcessRequest(
@@ -79,9 +79,9 @@ class TestUnifmrService:
         assert np.isfinite(np.asarray(result)).all()
 
     @pytest.mark.integration
-    def test_unknown_op_rejected(self, unifmr_service):
+    def test_unknown_op_rejected(self, unifmir_service):
         """An unknown op_name yields INVALID_ARGUMENT."""
-        stub = unifmr_service.process_stub()
+        stub = unifmir_service.process_stub()
         image = np.zeros((32, 32), dtype=np.float32)
 
         request_msg = proto.ProcessRequest(
@@ -93,9 +93,9 @@ class TestUnifmrService:
         assert exc.value.code() == grpc.StatusCode.INVALID_ARGUMENT
 
     @pytest.mark.integration
-    def test_run_detection_unimplemented(self, unifmr_service):
+    def test_run_detection_unimplemented(self, unifmir_service):
         """RunDetection is not supported for a restoration model."""
-        stub = unifmr_service.detection_stub()
+        stub = unifmir_service.detection_stub()
         image = np.zeros((32, 32), dtype=np.float32)
 
         request_msg = proto.DetectionRequest(
@@ -109,7 +109,7 @@ class TestUnifmrService:
 # --------------------------------------------------------------------------- #
 # Lazy (chunked) path. Needs a cache-enabled container with the tensor (Flight)
 # port exposed; the client sends an inline dask array (debug_pickled_array) and
-# reads the assembled result back over Flight. Set UNIFMR_TEST_CPU=1 to run the
+# reads the assembled result back over Flight. Set UNIFMIR_TEST_CPU=1 to run the
 # container on CPU (e.g. on GPUs too old for the prebuilt torch wheels).
 # --------------------------------------------------------------------------- #
 _LAZY_PORT = 50071
@@ -117,17 +117,17 @@ _LAZY_TPORT = 8837
 
 
 @pytest.fixture(scope="module")
-def unifmr_cache_service():
+def unifmir_cache_service():
     import subprocess
     import time
 
-    if subprocess.run(["docker", "image", "inspect", "unifmr:test"],
+    if subprocess.run(["docker", "image", "inspect", "unifmir:test"],
                       capture_output=True).returncode != 0:
-        pytest.skip("Image unifmr:test not found - build it first")
+        pytest.skip("Image unifmir:test not found - build it first")
 
-    name = "biopb-test-unifmr-cache"
+    name = "biopb-test-unifmir-cache"
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-    cpu = os.environ.get("UNIFMR_TEST_CPU")
+    cpu = os.environ.get("UNIFMIR_TEST_CPU")
     gpu_args = [] if cpu else ["--gpus=all"]
     server_args = [
         "--no-token", "--debug",
@@ -138,7 +138,7 @@ def unifmr_cache_service():
     proc = subprocess.Popen(
         ["docker", "run", "--rm", "--name", name, *gpu_args,
          "-p", f"{_LAZY_PORT}:50051", "-p", f"{_LAZY_TPORT}:8817",
-         "unifmr:test", *server_args],
+         "unifmir:test", *server_args],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     try:
@@ -151,7 +151,7 @@ def unifmr_cache_service():
                 break
             time.sleep(2)
         if not ok:
-            pytest.skip("unifmr cache service failed to become healthy")
+            pytest.skip("unifmir cache service failed to become healthy")
         yield {"port": _LAZY_PORT, "tensor_location": f"grpc://127.0.0.1:{_LAZY_TPORT}"}
     finally:
         subprocess.run(["docker", "stop", name], capture_output=True)
@@ -183,27 +183,27 @@ def _lazy_run(svc, op, img, chunks, async_result=False):
     return np.asarray(deserialize_image_data(resp.image_data))
 
 
-class TestUnifmrLazy:
+class TestUnifmirLazy:
     @pytest.mark.integration
-    def test_lazy_sr_sync(self, unifmr_cache_service):
+    def test_lazy_sr_sync(self, unifmir_cache_service):
         """SR over a multi-chunk lazy input assembles to a 2x output."""
         img = (np.random.default_rng(3).random((96, 96)) * 255).astype(np.float32)
-        out = _lazy_run(unifmr_cache_service, "sr_factin", img, chunks=(48, 48))
+        out = _lazy_run(unifmir_cache_service, "sr_factin", img, chunks=(48, 48))
         assert out.shape == (192, 192)
         assert np.isfinite(out).all()
 
     @pytest.mark.integration
-    def test_lazy_stack(self, unifmr_cache_service):
+    def test_lazy_stack(self, unifmir_cache_service):
         """Denoising a lazy Z-stack tiles the Y/X plane and keeps shape."""
         img = (np.random.default_rng(4).random((4, 96, 96)) * 1000).astype(np.float32)
-        out = _lazy_run(unifmr_cache_service, "denoise_planaria", img, chunks=(4, 48, 48))
+        out = _lazy_run(unifmir_cache_service, "denoise_planaria", img, chunks=(4, 48, 48))
         assert out.shape == (4, 96, 96)
         assert np.isfinite(out).all()
 
     @pytest.mark.integration
-    def test_lazy_async(self, unifmr_cache_service):
+    def test_lazy_async(self, unifmir_cache_service):
         """async_result returns a handle; result is readable once READY."""
         img = (np.random.default_rng(5).random((64, 64)) * 255).astype(np.float32)
-        out = _lazy_run(unifmr_cache_service, "sr_factin", img, chunks=(32, 32), async_result=True)
+        out = _lazy_run(unifmir_cache_service, "sr_factin", img, chunks=(32, 32), async_result=True)
         assert out.shape == (128, 128)
         assert np.isfinite(out).all()

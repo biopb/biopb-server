@@ -35,7 +35,7 @@ _SERVICE_GPU_REQUIREMENTS = {
     "lacss": "2GB",        # JAX-based, moderate
     "samcell": "4GB",      # SAM-based
     "ucell": "2GB",        # FRM-based
-    "unifmr": "2GB",       # SwinIR restoration heads
+    "unifmir": "2GB",       # SwinIR restoration heads
 }
 
 
@@ -284,17 +284,17 @@ def ucell_service():
 
 
 @pytest.fixture(scope="session")
-def unifmr_service():
-    """Launch unifmr (UNiFMIR restoration) service for testing.
+def unifmir_service():
+    """Launch unifmir (UNiFMIR restoration) service for testing.
 
     Requires ~2GB GPU memory.
-    Requires pre-built image: unifmr:test
+    Requires pre-built image: unifmir:test
     """
-    service = DockerService("unifmr")
+    service = DockerService("unifmir")
     if not service.image_exists():
-        pytest.skip("Image unifmr:test not found - build it first")
+        pytest.skip("Image unifmir:test not found - build it first")
     if not service.start():
-        pytest.skip("Failed to start unifmr service")
+        pytest.skip("Failed to start unifmir service")
     yield service
     service.stop()
 
