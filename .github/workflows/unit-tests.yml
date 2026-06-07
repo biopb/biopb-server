@@ -6,8 +6,10 @@ name: Unit Tests
 # <service>:test images and a GPU, so it is not run here.
 
 on:
+  # Push-triggered checks also surface on a branch's open PR (GitHub attaches
+  # the run to the head commit), so `push` alone covers both without the
+  # double-run that adding `pull_request` would cause on same-repo branches.
   push:
-  pull_request:
 
 concurrency:
   group: unit-tests-${{ github.ref }}
