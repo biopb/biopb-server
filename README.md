@@ -16,18 +16,14 @@ Requirements:
 
 
 ``` sh
-docker run --gpus=all -p 50051:50051 <image-name>
+docker run --gpus=all -p 127.0.0.1:50051:50051 <image-name>
 
-# running on a different port
-docker run --gpus=all -p 8888:50051 <image-name>
+# allow access from network with a token
+docker run --gpus=all -p 50051:50051 <image-name> --token
 
 # debug mode
-docker run --gpus=all -p 50051:50051 <image-name> --no-token --debug
-
-# require a token to access
-docker run --gpus=all -p 50051:50051 <image-name> --token
+docker run --gpus=all -p 127.0.0.1:50051:50051 <image-name> --no-token --debug
 ```
-
 Note: Default transport is HTTP (no encryption). To use TLS, setup a reverse proxy server, e.g., Nginx, to forward gRPC calls.
 
 ## License
