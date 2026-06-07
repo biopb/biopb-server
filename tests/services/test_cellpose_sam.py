@@ -141,7 +141,10 @@ def cellpose_sam_cache_service():
         ["docker", "run", "--rm", "--name", name, *gpu_args,
          "-p", f"{_LAZY_PORT}:50051", "-p", f"{_LAZY_TPORT}:8817",
          "cellpose-sam:test", *server_args],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # Discard container logs: we never read these pipes (health is checked
+        # via `docker exec grpc_health_probe`), and a full pipe buffer would
+        # block the chatty --debug container.
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     try:
         deadline = time.time() + 120
