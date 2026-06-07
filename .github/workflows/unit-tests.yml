@@ -1,0 +1,38 @@
+name: Unit Tests
+
+# Fast, GPU-free, container-free tests of the shared biopb_image_base logic that
+# every service builds on (parse_kwargs/validate_kwargs, image codec,
+# stitch/tiling reconciliation). The service integration tier needs pre-built
+# <service>:test images and a GPU, so it is not run here.
+
+on:
+  # Push-triggered checks also surface on a branch's open PR (GitHub attaches
+  # the run to the head commit), so `push` alone covers both without the
+  # double-run that adding `pull_request` would cause on same-repo branches.
+  push:
+
+concurrency:
+  group: unit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
+
+      - name: Install test dependencies
+        # Installs biopb-image-base from the biopb/biopb monorepo, pinned to the
+        # same commit as the base image in the service Dockerfiles.
+        run: pip install -e ".[test]"
+
+      - name: Run unit tier
+        run: pytest -m unit
