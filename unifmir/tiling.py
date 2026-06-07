@@ -14,25 +14,9 @@ from __future__ import annotations
 
 from typing import Callable
 
-
-def uniform_core(dim: int, target: int) -> int:
-    """Largest divisor of ``dim`` closest to ``target``.
-
-    Picking a core that evenly divides the dimension keeps every chunk the same
-    size, which the tensor cache requires (its array templates must have uniform
-    dask chunks). Falls back to ``dim`` itself when no good divisor exists.
-    """
-    if dim <= target:
-        return dim
-    best = dim
-    best_gap = abs(dim - target)
-    for c in range(1, int(dim ** 0.5) + 1):
-        if dim % c == 0:
-            for cand in (c, dim // c):
-                gap = abs(cand - target)
-                if gap < best_gap or (gap == best_gap and cand > best):
-                    best, best_gap = cand, gap
-    return best
+# Shared chunk-sizing primitive (issue #1): formerly a byte-identical local copy,
+# now the single source of truth in biopb_image_base.stitch.
+from biopb_image_base.stitch import uniform_core
 
 
 def plane_core_shape(plane_shape: tuple, tile_size: int) -> tuple:

@@ -1,4 +1,4 @@
-"""Unit tests for the non-overlapping chunk tiler (unifmr/tiling.py).
+"""Unit tests for the non-overlapping chunk tiler (unifmir/tiling.py).
 
 Container-free and GPU-free: a synthetic ``compute_chunk`` plays the role of the
 model by returning the input region upscaled by nearest-neighbour repeat. This

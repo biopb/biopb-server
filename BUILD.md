@@ -4,32 +4,42 @@ This document describes how to build and push Docker images for biopb services.
 
 ## Services
 
-Each subdirectory is an independent service with its own Dockerfile:
+Each top-level subdirectory with a `Dockerfile` is an independent, deployable
+service. `build.sh` and the CI workflow discover them automatically via
+`*/Dockerfile`:
 
 | Service | Description |
 |---------|-------------|
-| `biopb-base/` | Base image with common utilities (other services inherit from this) |
 | `cellpose/` | Cellpose Cyto3 cell segmentation |
-| ... |
+| `cellpose-sam/` | Cellpose-SAM |
+| `lacss/` | Lacss3 (JAX-based) |
+| `samcell/` | Finetuned SAM model |
+| `ucell/` | FRM-based model |
+| `unifmir/` | UNiFMIR image restoration |
+
+There is **no base image in this repo.** Every service inherits from
+`jiyuuchc/biopb-image-base:<sha>`, which is built and published from the separate
+[`biopb/biopb`](https://github.com/biopb/biopb) monorepo (subdirectory
+`biopb-image-runtime`). See "Base Image Dependency" below.
 
 ## Versioning
 
-Each service has a `VERSION` file that defines the image version tag:
+Each service has a `VERSION` file that defines the image version tag, e.g.:
 
 ```
-# biopb-base/VERSION
-0.2.1
+# cellpose/VERSION
+0.3.0
 ```
 
-If no VERSION file exists, `latest` is used.
+If no VERSION file exists, `latest` is used as the version tag.
 
 ## Image Naming
 
-Images are tagged as: `jiyuuchc/<service-name>:<tag>`
+Images are tagged as: `<REGISTRY>/<IMAGE_PREFIX>/<service-name>:<tag>`
+(defaults `docker.io` / `jiyuuchc`).
 
 Examples:
-- `jiyuuchc/biopb-base:0.2.1`
-- `jiyuuchc/cellpose:1.0.0`
+- `jiyuuchc/cellpose:0.3.0`
 - `jiyuuchc/samcell:latest`
 
 ## Local Build
@@ -39,16 +49,19 @@ Use `build.sh` for local builds with CI-consistent tagging:
 ### Build Single Service
 
 ```bash
-# Build biopb-base (no push)
-./build.sh --no-push biopb-base
+# Build cellpose without pushing
+./build.sh --no-push cellpose
 
 # Build and push cellpose
 ./build.sh cellpose
 ```
 
-### Build All Services
+### Build Multiple / All Services
 
 ```bash
+# Build specific services
+./build.sh cellpose samcell
+
 # Build all services without pushing
 ./build.sh --no-push all
 
@@ -62,8 +75,8 @@ Use `build.sh` for local builds with CI-consistent tagging:
 |--------|-------------|
 | `--no-push` | Build without pushing to registry |
 | `--push` | Build and push to registry (default) |
-| `<service>` | Build specific service |
-| `all` | Build all services |
+| `<service>` | Build specific service(s) |
+| `all` | Build all services (every dir with a `Dockerfile`) |
 
 ### Generated Tags
 
@@ -72,27 +85,28 @@ The script generates tags consistent with CI:
 | Tag | Description | Push Only |
 |-----|-------------|-----------|
 | `<sha>` | Git short commit hash | No |
-| `<version>` | From VERSION file | Yes |
+| `<version>` | From the service's `VERSION` file | Yes |
 | `latest` | Latest build | Yes |
 
-Example output for `biopb-base` with VERSION `0.2.1` and commit `9449e9a`:
-- `jiyuuchc/biopb-base:9449e9a` (always)
-- `jiyuuchc/biopb-base:0.2.1` (push only)
-- `jiyuuchc/biopb-base:latest` (push only)
+Example output for `cellpose` with VERSION `0.3.0` and commit `9449e9a`:
+- `jiyuuchc/cellpose:9449e9a` (always)
+- `jiyuuchc/cellpose:0.3.0` (push only)
+- `jiyuuchc/cellpose:latest` (push only)
 
 ### Environment Variables
 
 ```bash
 # Override registry (default: docker.io)
-REGISTRY=ghcr.io ./build.sh biopb-base
+REGISTRY=ghcr.io ./build.sh cellpose
 
 # Override image prefix (default: jiyuuchc)
-IMAGE_PREFIX=myorg ./build.sh biopb-base
+IMAGE_PREFIX=myorg ./build.sh cellpose
 ```
 
 ## Remote Build (GitHub Actions)
 
-Builds are triggered manually via GitHub Actions workflow dispatch.
+Builds are triggered manually via the **Docker Build and Push** workflow
+(`.github/workflows/docker-build.yml`) using workflow dispatch.
 
 ### Trigger Build
 
@@ -115,46 +129,56 @@ Builds are triggered manually via GitHub Actions workflow dispatch.
   - `DOCKERHUB_USERNAME`
   - `DOCKERHUB_TOKEN`
 
-## Testing
-
-Test scripts are available in `biopb-base/`:
+## Running a Built Image
 
 ```bash
-# Test unary RPC (RunDetection, Run)
-python biopb-base/test.py --port 50051 --token <token>
-
-# Test streaming RPC (RunStream)
-python biopb-base/test_streaming.py --port 50051 --token <token>
+docker run --gpus=all -p 50051:50051 <image> [--local|--no-token|--debug|--token]
 ```
 
-### Test Options
+Requires NVIDIA driver ≥525 and the NVIDIA Container Toolkit.
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--port` | Server port | 50051 |
-| `--ip` | Server IP | 127.0.0.1 |
-| `--token` | Auth token | (empty) |
-| `--debug` | Enable debug logging | False |
-| `--health` | Test health check first | True |
+## Testing
+
+Tests are run with `pytest`, not from any per-service test script. There are two
+tiers (see [CLAUDE.md](CLAUDE.md) and [pyproject.toml](pyproject.toml) for full
+details):
+
+- **Unit tier** (`tests/unit/`, marker `unit`) — fast, GPU-free, container-free.
+  Requires only `pip install -e ".[test]"`.
+  ```bash
+  .venv/bin/pytest -m unit
+  ```
+- **Integration tier** (`tests/services/`) — gRPC clients against running
+  containers. Requires pre-built images tagged `<service>:test` and a GPU.
+  ```bash
+  docker build -t cellpose:test cellpose/
+  .venv/bin/pytest tests/services/test_cellpose.py
+  ```
 
 ## Base Image Dependency
 
-Services that inherit from `biopb-base` should:
+Every service's `Dockerfile` starts with:
 
-1. Use the versioned tag in their Dockerfile:
-   ```dockerfile
-   FROM jiyuuchc/biopb-base:0.2.1
-   ```
+```dockerfile
+FROM jiyuuchc/biopb-image-base:<sha>
+```
 
-2. Rebuild when base image changes (manual trigger required)
+When the base image changes:
 
-## Build Matrix Examples
+1. Bump the `FROM jiyuuchc/biopb-image-base:<sha>` pin in each service's
+   `Dockerfile`.
+2. Bump the matching `biopb-image-base @ git+...@<commit>` pin in
+   [pyproject.toml](pyproject.toml) so the dev/test venv stays identical to the
+   container.
+3. Rebuild dependent services (manual trigger required) — the base is not built
+   in this repo.
+
+## Build Matrix Example
 
 ```bash
-# Build base image first, then dependent services
-./build.sh biopb-base
-./build.sh cellpose samcell
-
 # Quick test build (no push)
 ./build.sh --no-push cellpose
+
+# Build and push a couple of services
+./build.sh cellpose samcell
 ```

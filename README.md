@@ -33,8 +33,8 @@ Note: Default transport is HTTP (no encryption). To use TLS, setup a reverse pro
 ## License
 
 This repository is licensed under the MIT License (see [LICENSE](LICENSE)), with
-one exception: the `unifmr/` service vendors model code from the GPL-3.0-licensed
-[UNiFMIR](https://github.com/cxm12/UNiFMIR) project, so the `unifmr/` directory is
-distributed under the GNU GPL v3.0. See [unifmr/LICENSE](unifmr/LICENSE) and
-[unifmr/NOTICE](unifmr/NOTICE) for details.
+one exception: the `unifmir/` service vendors model code from the GPL-3.0-licensed
+[UNiFMIR](https://github.com/cxm12/UNiFMIR) project, so the `unifmir/` directory is
+distributed under the GNU GPL v3.0. See [unifmir/LICENSE](unifmir/LICENSE) and
+[unifmir/NOTICE](unifmir/NOTICE) for details.
 

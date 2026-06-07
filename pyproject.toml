@@ -19,10 +19,11 @@ py-modules = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# "ucell"/"unifmr" let unit tests import each service's import-light modules
-# (stitch, dynamics_local; tiling, heads) by the same top-level names they use
-# inside the container.
-pythonpath = [".", "ucell", "unifmr"]
+# "unifmir" lets unit tests import its import-light modules (tiling) by the same
+# top-level name used inside the container. The cellpose/ucell stitch and
+# dynamics_local modules moved into biopb_image_base (issue #1), so their dirs no
+# longer need to be on the path.
+pythonpath = [".", "unifmir"]
 markers = [
     "unit: GPU-free, container-free tests of shared biopb_image_base logic (fast)",
     "smoke: basic connectivity tests (fast)",
@@ -54,9 +55,9 @@ test = [
     "typer",
     # Base utilities used by every *_server.py. Not in PyPI; installed from the
     # biopb/biopb monorepo subdirectory. Pin matches the base image tag in the
-    # service Dockerfiles (FROM jiyuuchc/biopb-image-base:e7aa1fc) so the local
+    # service Dockerfiles (FROM jiyuuchc/biopb-image-base:ec58ca5) so the local
     # module is identical to what runs inside the containers. NOTE: the package
     # subdirectory was renamed biopb-image-server/ -> biopb-image-runtime/ --
     # update the #subdirectory= if you bump to an older/newer commit.
-    "biopb-image-base @ git+https://github.com/biopb/biopb.git@e7aa1fc#subdirectory=biopb-image-runtime",
+    "biopb-image-base @ git+https://github.com/biopb/biopb.git@ec58ca5#subdirectory=biopb-image-runtime",
 ]
