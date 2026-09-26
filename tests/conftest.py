@@ -5,6 +5,8 @@ tests will be skipped. Cellpose is the most lightweight and can often
 run on machines with limited GPU memory.
 """
 
+from __future__ import annotations
+
 import subprocess
 import time
 import tempfile
@@ -72,11 +74,14 @@ class DockerService:
         port: int = 50051,
         build_dir: Optional[Path] = None,
         extra_args: Optional[list] = None,
+        docker_args: Optional[list] = None,
     ):
         self.service_name = service_name
         self.port = port
         self.build_dir = build_dir or Path(service_name)
         self.extra_args = extra_args or ["--no-token", "--debug"]
+        # `docker run` options; the default publishes the service port.
+        self.docker_args = docker_args or ["-p", f"{port}:{port}"]
         self.container_name = f"biopb-test-{service_name}"
         self._proc: Optional[subprocess.Popen] = None
         self._channel: Optional[grpc.Channel] = None
@@ -109,7 +114,7 @@ class DockerService:
             [
                 "docker", "run", "--rm", "--gpus=all",
                 "--name", self.container_name,
-                "-p", f"{self.port}:{self.port}",
+                *self.docker_args,
                 image_tag,
                 *self.extra_args,
             ],
@@ -210,7 +215,13 @@ def cellpose_service():
 
     Requires pre-built image: cellpose:test
     """
-    service = DockerService("cellpose")
+    # An Ops server takes no token on loopback, so the container shares the
+    # host's network and binds 127.0.0.1.
+    service = DockerService(
+        "cellpose",
+        docker_args=["--network", "host"],
+        extra_args=["--host", "127.0.0.1", "--port", "50051"],
+    )
     if not service.image_exists():
         pytest.skip("Image cellpose:test not found - build it first with: docker build -t cellpose:test cellpose/")
     if not service.start():
@@ -308,12 +319,6 @@ def cellpose_channel(cellpose_service):
 
 
 @pytest.fixture
-def cellpose_detection_stub(cellpose_service):
-    """Get ObjectDetection stub for cellpose."""
-    return cellpose_service.detection_stub()
-
-
-@pytest.fixture
-def cellpose_process_stub(cellpose_service):
-    """Get ProcessImage stub for cellpose."""
-    return cellpose_service.process_stub()
+def cellpose_ops_stub(cellpose_service):
+    """Get Ops stub for cellpose."""
+    return proto.OpsStub(cellpose_service.channel())

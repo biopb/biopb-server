@@ -80,10 +80,10 @@ The host has a Tesla T4 but needs the CUDA **forward-compat** libraries, so run
 with:
 
 ```bash
-docker run --gpus=all \
+docker run --gpus=all --network host \
   --volume /usr/local/cuda-12.6/compat:/compat \
   -e LD_LIBRARY_PATH=/compat \
-  -p 50051:50051 jiyuuchc/cellpose:nosse42 --no-token
+  jiyuuchc/cellpose:nosse42 --host 127.0.0.1 --port 50051
 ```
 
 (Do **not** pass `--no-gpu`/`gpu=False` on this hardware — it forces the MKL CPU
