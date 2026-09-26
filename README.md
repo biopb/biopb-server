@@ -24,6 +24,16 @@ docker run --gpus=all -p 50051:50051 <image-name> --token
 # debug mode
 docker run --gpus=all -p 127.0.0.1:50051:50051 <image-name> --no-token --debug
 ```
+jiyuuchc/cellpose serves the biopb.image `Ops` protocol and takes other flags.
+It needs no token bound to loopback, so share the host's network:
+
+``` sh
+docker run --gpus=all --network host jiyuuchc/cellpose --host 127.0.0.1 --port 50051
+```
+
+Bound to any other address it requires a token: `$BIOPB_ALGORITHM_TOKEN`, or one
+it mints and prints at startup.
+
 Note: Default transport is HTTP (no encryption). To use TLS, setup a reverse proxy server, e.g., Nginx, to forward gRPC calls.
 
 ## License

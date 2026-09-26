@@ -1,122 +1,84 @@
-"""Tests for Cellpose service."""
+"""Tests for the cellpose service, an Ops server.
 
-import pytest
+They need a biopb SDK with the Ops protocol, and the cellpose:test image.
+"""
+
+import grpc
 import numpy as np
+import pytest
+from google.protobuf import empty_pb2, json_format, struct_pb2
+from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 import biopb.image as proto
-from biopb.image.utils import serialize_from_numpy_to_image_data
-from tests.test_service_base import ServiceTestBase
+from biopb.image.utils import deserialize_image_data, serialize_from_numpy_to_image_data
 
 
-class TestCellposeSmoke(ServiceTestBase):
-    """Smoke tests for Cellpose service."""
+def _call(stub, image, dim_labels, **kwargs):
+    """The cellpose op's label image for *image*, and the result's axes."""
+    args = {
+        "image": proto.Arg(
+            eager=serialize_from_numpy_to_image_data(image, dim_labels=dim_labels).eager_data
+        )
+    }
+    for key, value in kwargs.items():
+        args[key] = proto.Arg(json=json_format.ParseDict(value, struct_pb2.Value()))
+    events = list(stub.Call(proto.Call(op="cellpose", args=args), timeout=120))
+    result = events[-1].outputs["result"].eager
+    return deserialize_image_data(proto.ImageData(eager_data=result)), list(result.dim_labels)
 
-    service_fixture_name = "cellpose_service"
+
+class TestCellposeSmoke:
+    """Smoke tests for the cellpose service."""
+
+    @pytest.mark.smoke
+    def test_health_check(self, cellpose_channel):
+        stub = health_pb2_grpc.HealthStub(cellpose_channel)
+        response = stub.Check(health_pb2.HealthCheckRequest(), timeout=5)
+        assert response.status == health_pb2.HealthCheckResponse.SERVING
+
+    @pytest.mark.smoke
+    def test_describe_lists_cellpose(self, cellpose_ops_stub):
+        (info,) = cellpose_ops_stub.Describe(empty_pb2.Empty(), timeout=10).ops
+        assert info.name == "cellpose"
+        assert list(info.tensors) == ["image"]
+        assert json_format.MessageToDict(info.kwargs)["diameter"] == 30.0
 
 
 class TestCellposeIntegration:
-    """Integration tests for Cellpose-specific features."""
+    """Integration tests for the cellpose op."""
 
     @pytest.mark.integration
-    def test_2d_detection(self, cellpose_detection_stub, test_image_2d):
-        """2D cell segmentation should work."""
-        image_data = serialize_from_numpy_to_image_data(test_image_2d)
-        request = proto.DetectionRequest(
-            image_data=image_data,
-            detection_settings=proto.DetectionSettings(scaling_hint=1.0),
+    def test_2d_label_image(self, cellpose_ops_stub, test_image_2d):
+        mask, labels = _call(cellpose_ops_stub, test_image_2d, ["Y", "X"])
+        assert labels == ["Y", "X"]
+        assert mask.shape == test_image_2d.shape
+        assert mask.max() > 0
+
+    @pytest.mark.integration
+    def test_kwargs(self, cellpose_ops_stub, test_image_2d):
+        mask, _ = _call(
+            cellpose_ops_stub, test_image_2d, ["Y", "X"],
+            diameter=50.0, channels=[0, 0], min_size=30,
         )
-
-        response = cellpose_detection_stub.RunDetection(request, timeout=30)
-        assert len(response.detections) > 0
+        assert mask.max() > 0
 
     @pytest.mark.integration
-    def test_2d_process_mask(self, cellpose_process_stub, test_image_2d):
-        """ProcessImage should return segmentation mask."""
-        image_data = serialize_from_numpy_to_image_data(test_image_2d)
-        request = proto.ProcessRequest(image_data=image_data)
-
-        response = cellpose_process_stub.Run(request, timeout=60)
-
-        # Decode result
-        from biopb.image.utils import deserialize_image_data
-        result = deserialize_image_data(response.image_data)
-
-        # Should be a mask with same spatial dimensions
-        assert result.shape[:2] == test_image_2d.shape[:2]
+    def test_invalid_kwarg_is_invalid_argument(self, cellpose_ops_stub, test_image_2d):
+        with pytest.raises(grpc.RpcError) as info:
+            _call(cellpose_ops_stub, test_image_2d, ["Y", "X"], flow_threshold=2.0)
+        assert info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
 
     @pytest.mark.integration
-    def test_kwargs_diameter(self, cellpose_detection_stub, test_image_2d):
-        """Custom diameter parameter should work."""
-        from google.protobuf.struct_pb2 import Struct
-
-        image_data = serialize_from_numpy_to_image_data(test_image_2d)
-        kwargs_struct = Struct()
-        kwargs_struct.fields["diameter"].number_value = 50.0
-
-        request = proto.DetectionRequest(
-            image_data=image_data,
-            detection_settings=proto.DetectionSettings(scaling_hint=1.0),
-            kwargs=kwargs_struct,
-        )
-
-        response = cellpose_detection_stub.RunDetection(request, timeout=30)
-        assert len(response.detections) > 0
+    def test_multichannel(self, cellpose_ops_stub, test_image_2d):
+        rgb = np.stack([test_image_2d, test_image_2d // 2, np.zeros_like(test_image_2d)], -1)
+        mask, labels = _call(cellpose_ops_stub, rgb, ["Y", "X", "C"], channels=[1, 2])
+        assert labels == ["Y", "X", "C"]
+        assert mask.shape[:2] == test_image_2d.shape
+        assert mask.max() > 0
 
     @pytest.mark.integration
-    def test_kwargs_channels(self, cellpose_detection_stub, test_image_2d):
-        """Channel specification should work."""
-        from google.protobuf.struct_pb2 import Struct, Value
-
-        image_data = serialize_from_numpy_to_image_data(test_image_2d)
-        kwargs_struct = Struct()
-        # Add channels as a list value - need to create Value objects and add them
-        kwargs_struct.fields["channels"].list_value.values.append(Value(number_value=1))
-        kwargs_struct.fields["channels"].list_value.values.append(Value(number_value=2))
-
-        request = proto.DetectionRequest(
-            image_data=image_data,
-            detection_settings=proto.DetectionSettings(scaling_hint=1.0),
-            kwargs=kwargs_struct,
-        )
-
-        response = cellpose_detection_stub.RunDetection(request, timeout=30)
-        # Just verify the request succeeds - detection count depends on image content
-        assert response is not None
-
-    @pytest.mark.skip(reason="ObjectDetection with 3D data not supported by cellpose")
-    def test_3d_raises_error(self, cellpose_detection_stub, test_image_3d):
-        """3D input to RunDetection should raise appropriate error."""
-        # Cellpose RunDetection doesn't support 3D, but ProcessImage does
-        image_data = serialize_from_numpy_to_image_data(test_image_3d)
-        request = proto.DetectionRequest(
-            image_data=image_data,
-            detection_settings=proto.DetectionSettings(scaling_hint=1.0),
-        )
-
-        with pytest.raises(Exception):  # Should raise ValueError or similar
-            cellpose_detection_stub.RunDetection(request, timeout=30)
-
-    @pytest.mark.integration
-    def test_get_op_names_returns_cellpose(self, cellpose_process_stub):
-        """GetOpNames should return 'cellpose' operation."""
-        from google.protobuf.empty_pb2 import Empty
-
-        response = cellpose_process_stub.GetOpNames(Empty(), timeout=10)
-        assert "cellpose" in response.names
-
-    @pytest.mark.integration
-    def test_cell_diameter_hint(self, cellpose_detection_stub, test_image_2d):
-        """cell_diameter_hint should affect detection."""
-        image_data = serialize_from_numpy_to_image_data(test_image_2d)
-
-        # Request with diameter hint
-        request = proto.DetectionRequest(
-            image_data=image_data,
-            detection_settings=proto.DetectionSettings(
-                scaling_hint=1.0,
-                cell_diameter_hint=30.0,  # 30 microns
-            ),
-        )
-
-        response = cellpose_detection_stub.RunDetection(request, timeout=30)
-        assert len(response.detections) > 0
+    def test_3d_volume(self, cellpose_ops_stub, test_image_2d):
+        volume = np.stack([test_image_2d[:256, :256]] * 4)
+        mask, labels = _call(cellpose_ops_stub, volume, ["Z", "Y", "X"])
+        assert labels == ["Z", "Y", "X"]
+        assert mask.shape == volume.shape

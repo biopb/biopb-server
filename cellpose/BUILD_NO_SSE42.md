@@ -80,10 +80,10 @@ The host has a Tesla T4 but needs the CUDA **forward-compat** libraries, so run
 with:
 
 ```bash
-docker run --gpus=all \
+docker run --gpus=all --network host \
   --volume /usr/local/cuda-12.6/compat:/compat \
   -e LD_LIBRARY_PATH=/compat \
-  -p 50051:50051 jiyuuchc/cellpose:nosse42 --no-token
+  jiyuuchc/cellpose:nosse42 --host 127.0.0.1 --port 50051
 ```
 
 (Do **not** pass `--no-gpu`/`gpu=False` on this hardware — it forces the MKL CPU
@@ -91,19 +91,15 @@ path and crashes.)
 
 ### Verification performed
 
-On `jyu@biopb.org` (Opteron 6172 + Tesla T4), in a container built FROM the
-prebuilt image with both Path-A parts applied and the compat layer mounted:
+On `jyu@biopb.org` (Opteron 6172 + Tesla T4), `jiyuuchc/cellpose:0.4.0-nosse42`
+run as above on port 50053 (2026-09-26):
 
-- `import dask.array`, `import biopb_image_base`, `from cellpose import models`
-  — all import cleanly (previously SIGILL via pyarrow).
-- The server boots, `grpc_health_probe` returns `SERVING`, and a real
-  `RunDetection` on an eager image runs on the GPU (`cuda: True, Tesla T4`) and
-  returns the correct detections.
-- With `--cache-dir` but pyarrow absent, `run_server` logs a warning, **does not**
-  start the tensor side channel, and the server stays healthy (eager-only).
-- Fixed an unrelated pre-existing bug along the way: `RunDetection` was passing
-  the default `async_result` kwarg into `CellposeModel.eval()` (it is a
-  lazy-output control flag, ProcessImage-only) — now stripped in `process_input`.
+- The server boots without pyarrow, `grpc_health_probe` returns `SERVING`, and
+  `Describe` lists `cellpose`.
+- On GPU, the 512x512 test image segments to 220 cells, the same as an AVX host;
+  `YXC` and `ZYX` inputs work, and a bad kwarg returns `INVALID_ARGUMENT`.
+- Without pyarrow the embedded tensor cache does not start, so results come back
+  inline only.
 
 ## Path B — build a pyarrow without the SSE4.2 baseline (for full lazy/Flight)
 
