@@ -41,7 +41,8 @@ class TestCellposeSmoke:
         (info,) = cellpose_ops_stub.Describe(empty_pb2.Empty(), timeout=10).ops
         assert info.name == "cellpose"
         assert list(info.tensors) == ["image"]
-        assert json_format.MessageToDict(info.kwargs)["diameter"] == 30.0
+        assert "diameter=30.0" in info.kwargs
+        assert info.input == proto.OpInfo.LAZY
 
 
 class TestCellposeIntegration:
