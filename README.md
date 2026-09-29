@@ -15,24 +15,28 @@ Requirements:
   - [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
 
-``` sh
-docker run --gpus=all -p 127.0.0.1:50051:50051 <image-name>
+Every image serves the biopb.image `Ops` protocol (`--help` lists the flags; `--describe`
+prints the ops an image offers and exits).
 
-# allow access from network with a token
-docker run --gpus=all -p 50051:50051 <image-name> --token
-
-# debug mode
-docker run --gpus=all -p 127.0.0.1:50051:50051 <image-name> --no-token --debug
-```
-jiyuuchc/cellpose serves the biopb.image `Ops` protocol and takes other flags.
-It needs no token bound to loopback, so share the host's network:
+Locally, share the host's network and bind loopback, where no token is needed:
 
 ``` sh
-docker run --gpus=all --network host jiyuuchc/cellpose --host 127.0.0.1 --port 50051
+docker run --gpus=all --network host <image-name> --host 127.0.0.1 --port 50051
 ```
 
-Bound to any other address it requires a token: `$BIOPB_ALGORITHM_TOKEN`, or one
-it mints and prints at startup.
+From the network, publish the port. The image binds `0.0.0.0` by default, where a token
+is required: set `$BIOPB_ALGORITHM_TOKEN`, or the server mints one and prints it at
+startup. Clients send it as `authorization: Bearer <token>`.
+
+``` sh
+docker run --gpus=all -p 50051:50051 -e BIOPB_ALGORITHM_TOKEN=<token> <image-name>
+```
+
+Debug logging: add `-e BIOPB_LOG_LEVEL=DEBUG`.
+
+Results too large for one message are returned through an embedded tensor server when
+the container is started with `--cache-dir <dir>` (and `--tensor-port`, default 8817,
+published).
 
 Note: Default transport is HTTP (no encryption). To use TLS, setup a reverse proxy server, e.g., Nginx, to forward gRPC calls.
 
