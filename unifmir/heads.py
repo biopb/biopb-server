@@ -170,14 +170,14 @@ class HeadSpec:
     upscale: int
     ndim: int                # expected spatial ndim of the input (2 or 3)
     runner: Callable[..., np.ndarray]
-    description: str         # user-facing; surfaced via ProcessImage.GetOpNames
+    description: str         # user-facing; surfaced as the op's description
     labels: tuple            # organizational tags (task / dataset / structure)
 
 
 # Descriptions below are written for the end user (a microscopist choosing an op),
 # not the developer: they state the imaged structure/sample, the expected input,
-# what the restoration does, and the output. They are surfaced verbatim through
-# ProcessImage.GetOpNames alongside `labels` and an input-shape hint.
+# what the restoration does, and the output. They are surfaced verbatim as the
+# ops' descriptions alongside `labels`.
 HEADS: dict[str, HeadSpec] = {
     spec.op_name: spec
     for spec in [
@@ -239,16 +239,6 @@ HEADS: dict[str, HeadSpec] = {
         ),
     ]
 }
-
-
-def input_shape_hint(spec: HeadSpec) -> tuple[list[str], list[str]]:
-    """(expected_singletons, required_multivalue) describing the op's input.
-
-    2D ops want a single plane (Z singleton); 3D ops require a Z-stack.
-    """
-    if spec.ndim == 2:
-        return ["Z"], []
-    return [], ["Z"]
 
 
 def load_head(spec: HeadSpec, ckpt_dir: str, device: torch.device):
