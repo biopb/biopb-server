@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       services:
-        description: 'Services to build (comma-separated, e.g., "cellpose,lacss" or "all")'
+        description: 'Services to build (comma-separated, e.g., "cellpose,ucell" or "all")'
         required: true
         default: 'all'
         type: string

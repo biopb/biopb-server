@@ -12,7 +12,6 @@ service. `build.sh` and the CI workflow discover them automatically via
 |---------|-------------|
 | `cellpose/` | Cellpose Cyto3 cell segmentation |
 | `cellpose-sam/` | Cellpose-SAM |
-| `lacss/` | Lacss3 (JAX-based) |
 | `samcell/` | Finetuned SAM model |
 | `ucell/` | FRM-based model |
 | `unifmir/` | UNiFMIR image restoration |
@@ -113,7 +112,6 @@ Builds are triggered manually via the **Docker Build and Push** workflow
 1. Go to **Actions** → **Docker Build and Push**
 2. Click **Run workflow**
 3. Configure:
-   - **Services**: Comma-separated list (e.g., `cellpose,lacss`) or `all`
    - **Push to registry**: Enable to push, disable for dry-run
 
 ### Workflow Inputs

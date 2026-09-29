@@ -1,5 +1,6 @@
 """Shared pytest fixtures for biopb-server tests.
 
+Every service is an Ops server, run in a container that shares the host's network.
 Note: Most services require GPU. On machines without sufficient GPU,
 tests will be skipped. Cellpose is the most lightweight and can often
 run on machines with limited GPU memory.
@@ -7,20 +8,17 @@ run on machines with limited GPU memory.
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import time
-import tempfile
-import shutil
-from pathlib import Path
-from typing import Generator, Optional
+from typing import Optional
 
 import grpc
-import numpy as np
 import pytest
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 import biopb.image as proto
-from biopb.image import serialize_from_numpy_to_image_data
 
 
 # Default gRPC options for large messages
@@ -29,16 +27,8 @@ _GRPC_OPTIONS = [
     ("grpc.max_send_message_length", 256 * 1024 * 1024),
 ]
 
-
-# Service GPU requirements (approximate VRAM needed)
-_SERVICE_GPU_REQUIREMENTS = {
-    "cellpose": "1GB",      # Lightest, can often run without dedicated GPU
-    "cellpose-sam": "4GB",  # SAM model needs more memory
-    "lacss": "2GB",        # JAX-based, moderate
-    "samcell": "4GB",      # SAM-based
-    "ucell": "2GB",        # FRM-based
-    "unifmir": "2GB",       # SwinIR restoration heads
-}
+# The line a server logs once it is bound: "serving cellpose on 127.0.0.1:41235".
+_SERVING = re.compile(r"serving .+ on [\d.]+:(\d+)")
 
 
 def wait_for_service(addr: str, timeout: int = 30) -> bool:
@@ -66,23 +56,23 @@ def wait_for_service(addr: str, timeout: int = 30) -> bool:
 
 
 class DockerService:
-    """Handle for a Docker service container."""
+    """Handle for an Ops service container, run from the image ``<name>:test``.
 
-    def __init__(
-        self,
-        service_name: str,
-        port: int = 50051,
-        build_dir: Optional[Path] = None,
-        extra_args: Optional[list] = None,
-        docker_args: Optional[list] = None,
-    ):
+    The container shares the host's network and binds 127.0.0.1, where an Ops
+    server takes no token. It is started on port 0, so the kernel picks a free
+    port and no two services (or two test sessions) can collide; the port is
+    read back from the line the server logs once it is bound.
+
+    The container gets the GPUs (``--gpus=all``) unless ``BIOPB_TEST_CPU`` is
+    set, for a machine without a GPU the image's torch supports. Inference on
+    the CPU is slow.
+    """
+
+    def __init__(self, service_name: str, extra_args: Optional[list] = None):
         self.service_name = service_name
-        self.port = port
-        self.build_dir = build_dir or Path(service_name)
-        self.extra_args = extra_args or ["--no-token", "--debug"]
-        # `docker run` options; the default publishes the service port.
-        self.docker_args = docker_args or ["-p", f"{port}:{port}"]
-        self.container_name = f"biopb-test-{service_name}"
+        self.extra_args = extra_args or []
+        self.port: Optional[int] = None
+        self.container_name = f"biopb-test-{service_name}-{os.getpid()}"
         self._proc: Optional[subprocess.Popen] = None
         self._channel: Optional[grpc.Channel] = None
 
@@ -95,38 +85,53 @@ class DockerService:
         )
         return result.returncode == 0
 
-    def start(self) -> bool:
-        """Start the Docker container if image exists.
+    def _logged_port(self, timeout: int) -> Optional[int]:
+        """The port the container reports it is serving on, or None."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._proc.poll() is not None:
+                return None  # the container exited before it bound
+            logs = subprocess.run(
+                ["docker", "logs", self.container_name],
+                capture_output=True, text=True,
+            )
+            match = _SERVING.search(logs.stdout + logs.stderr)
+            if match:
+                return int(match.group(1))
+            time.sleep(1)
+        return None
 
-        If a healthy service is already running on the port, reuse it.
-        """
-        image_tag = f"{self.service_name}:test"
-
-        # Check if service is already running and healthy
-        if wait_for_service(f"127.0.0.1:{self.port}", timeout=2):
-            # Service already running, reuse it
-            return True
-
+    def start(self, timeout: int = 120) -> bool:
+        """Start the Docker container if the image exists."""
         if not self.image_exists():
             return False
 
+        subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True)
+        gpu_args = [] if os.environ.get("BIOPB_TEST_CPU") else ["--gpus=all"]
+        # Logs are read back with `docker logs`: a pipe nobody drains would
+        # block the container once it filled.
         self._proc = subprocess.Popen(
             [
-                "docker", "run", "--rm", "--gpus=all",
+                "docker", "run", "--rm", *gpu_args, "--network", "host",
                 "--name", self.container_name,
-                *self.docker_args,
-                image_tag,
+                f"{self.service_name}:test",
+                "--host", "127.0.0.1", "--port", "0",
                 *self.extra_args,
             ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
+        self.port = self._logged_port(timeout)
+        if self.port is None:
+            self.stop()
+            return False
         return wait_for_service(f"127.0.0.1:{self.port}")
 
     def stop(self) -> None:
-        """Stop the Docker container (only if we started it)."""
+        """Stop the Docker container."""
         if self._proc:
-            subprocess.run(["docker", "stop", self.container_name], check=False)
+            subprocess.run(["docker", "stop", self.container_name], check=False,
+                           capture_output=True)
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=5)
@@ -141,14 +146,6 @@ class DockerService:
                 options=_GRPC_OPTIONS,
             )
         return self._channel
-
-    def detection_stub(self) -> proto.ObjectDetectionStub:
-        """Get ObjectDetection stub."""
-        return proto.ObjectDetectionStub(self.channel())
-
-    def process_stub(self) -> proto.ProcessImageStub:
-        """Get ProcessImage stub."""
-        return proto.ProcessImageStub(self.channel())
 
 
 @pytest.fixture(scope="session")
@@ -179,200 +176,43 @@ def test_image_3d():
     return generate_3d_stack(10, 256, 256, 1)
 
 
-@pytest.fixture
-def detection_request_factory():
-    """Factory to create DetectionRequest from numpy array."""
-    def _create(image: np.ndarray, **settings):
-        image_data = serialize_from_numpy_to_image_data(image)
-        return proto.DetectionRequest(
-            image_data=image_data,
-            detection_settings=proto.DetectionSettings(**settings),
-        )
-    return _create
+def _service_fixtures(name: str, vram: str, note: str = ""):
+    """The fixtures for one service: the container, its channel, its Ops stub.
 
-
-@pytest.fixture
-def process_request_factory():
-    """Factory to create ProcessRequest from numpy array."""
-    def _create(image: np.ndarray, op_name: str = "", **kwargs):
-        image_data = serialize_from_numpy_to_image_data(image)
-        return proto.ProcessRequest(
-            image_data=image_data,
-            op_name=op_name,
-        )
-    return _create
-
-
-# Service fixtures - these launch Docker containers
-# Use @pytest.mark.service("cellpose") to select which service to test
-
-@pytest.fixture(scope="session")
-def cellpose_service():
-    """Launch cellpose service for testing.
-
-    Cellpose is the lightest service and can often run on machines
-    with limited GPU memory or even CPU-only (slow but functional).
-
-    Requires pre-built image: cellpose:test
+    They are named after the service (dashes to underscores): ``<name>_service``
+    (session-scoped), ``<name>_channel`` and ``<name>_ops_stub``.
     """
-    # An Ops server takes no token on loopback, so the container shares the
-    # host's network and binds 127.0.0.1.
-    service = DockerService(
-        "cellpose",
-        docker_args=["--network", "host"],
-        extra_args=["--host", "127.0.0.1", "--port", "50051"],
-    )
-    if not service.image_exists():
-        pytest.skip("Image cellpose:test not found - build it first with: docker build -t cellpose:test cellpose/")
-    if not service.start():
-        pytest.skip("Failed to start cellpose service")
-    yield service
-    service.stop()
+    ident = name.replace("-", "_")
+
+    @pytest.fixture(scope="session")
+    def service():
+        service = DockerService(name)
+        if not service.image_exists():
+            pytest.skip(f"Image {name}:test not found - build it first with: docker build -t {name}:test {name}/")
+        if not service.start():
+            pytest.skip(f"Failed to start {name} service")
+        yield service
+        service.stop()
+
+    @pytest.fixture
+    def channel(request):
+        return request.getfixturevalue(f"{ident}_service").channel()
+
+    @pytest.fixture
+    def ops_stub(request):
+        return proto.OpsStub(request.getfixturevalue(f"{ident}_service").channel())
+
+    service.__doc__ = f"Launch the {name} service for testing. Needs ~{vram} GPU memory. {note}".strip()
+    return {f"{ident}_service": service, f"{ident}_channel": channel, f"{ident}_ops_stub": ops_stub}
 
 
-@pytest.fixture(scope="session")
-def cellpose_sam_service():
-    """Launch cellpose-sam service for testing.
-
-    Requires ~4GB GPU memory.
-    Requires pre-built image: cellpose-sam:test
-    """
-    # An Ops server takes no token on loopback, so the container shares the
-    # host's network and binds 127.0.0.1.
-    service = DockerService(
-        "cellpose-sam",
-        docker_args=["--network", "host"],
-        extra_args=["--host", "127.0.0.1", "--port", "50051"],
-    )
-    if not service.image_exists():
-        pytest.skip("Image cellpose-sam:test not found - build it first")
-    if not service.start():
-        pytest.skip("Failed to start cellpose-sam service")
-    yield service
-    service.stop()
-
-
-@pytest.fixture(scope="session")
-def lacss_service():
-    """Launch lacss service for testing.
-
-    Requires ~2GB GPU memory.
-    Requires pre-built image: lacss:test
-    """
-    service = DockerService("lacss")
-    if not service.image_exists():
-        pytest.skip("Image lacss:test not found - build it first")
-    if not service.start():
-        pytest.skip("Failed to start lacss service")
-    yield service
-    service.stop()
-
-
-@pytest.fixture(scope="session")
-def samcell_service():
-    """Launch samcell service for testing.
-
-    Requires ~4GB GPU memory.
-    Requires pre-built image: samcell:test
-    """
-    # An Ops server takes no token on loopback, so the container shares the
-    # host's network and binds 127.0.0.1.
-    service = DockerService(
-        "samcell",
-        docker_args=["--network", "host"],
-        extra_args=["--host", "127.0.0.1", "--port", "50051"],
-    )
-    if not service.image_exists():
-        pytest.skip("Image samcell:test not found - build it first")
-    if not service.start():
-        pytest.skip("Failed to start samcell service")
-    yield service
-    service.stop()
-
-
-@pytest.fixture(scope="session")
-def ucell_service():
-    """Launch ucell service for testing.
-
-    Requires ~2GB GPU memory.
-    Requires pre-built image: ucell:test
-    """
-    # An Ops server takes no token on loopback, so the container shares the
-    # host's network and binds 127.0.0.1.
-    service = DockerService(
-        "ucell",
-        docker_args=["--network", "host"],
-        extra_args=["--host", "127.0.0.1", "--port", "50051"],
-    )
-    if not service.image_exists():
-        pytest.skip("Image ucell:test not found - build it first")
-    if not service.start():
-        pytest.skip("Failed to start ucell service")
-    yield service
-    service.stop()
-
-
-@pytest.fixture(scope="session")
-def unifmir_service():
-    """Launch unifmir (UNiFMIR restoration) service for testing.
-
-    Requires ~2GB GPU memory.
-    Requires pre-built image: unifmir:test
-    """
-    service = DockerService("unifmir")
-    if not service.image_exists():
-        pytest.skip("Image unifmir:test not found - build it first")
-    if not service.start():
-        pytest.skip("Failed to start unifmir service")
-    yield service
-    service.stop()
-
-
-# Convenience fixtures for direct channel/stub access
-
-@pytest.fixture
-def cellpose_channel(cellpose_service):
-    """Get gRPC channel to cellpose service."""
-    return cellpose_service.channel()
-
-
-@pytest.fixture
-def cellpose_ops_stub(cellpose_service):
-    """Get Ops stub for cellpose."""
-    return proto.OpsStub(cellpose_service.channel())
-
-
-@pytest.fixture
-def ucell_channel(ucell_service):
-    """Get gRPC channel to ucell service."""
-    return ucell_service.channel()
-
-
-@pytest.fixture
-def ucell_ops_stub(ucell_service):
-    """Get Ops stub for ucell."""
-    return proto.OpsStub(ucell_service.channel())
-
-
-@pytest.fixture
-def cellpose_sam_channel(cellpose_sam_service):
-    """Get gRPC channel to cellpose-sam service."""
-    return cellpose_sam_service.channel()
-
-
-@pytest.fixture
-def cellpose_sam_ops_stub(cellpose_sam_service):
-    """Get Ops stub for cellpose-sam."""
-    return proto.OpsStub(cellpose_sam_service.channel())
-
-
-@pytest.fixture
-def samcell_channel(samcell_service):
-    """Get gRPC channel to samcell service."""
-    return samcell_service.channel()
-
-
-@pytest.fixture
-def samcell_ops_stub(samcell_service):
-    """Get Ops stub for samcell."""
-    return proto.OpsStub(samcell_service.channel())
+# Approximate VRAM each service needs.
+globals().update(
+    {
+        **_service_fixtures("cellpose", "1GB", "The lightest; often runs on a small GPU."),
+        **_service_fixtures("cellpose-sam", "4GB"),
+        **_service_fixtures("samcell", "4GB"),
+        **_service_fixtures("ucell", "2GB"),
+        **_service_fixtures("unifmir", "2GB"),
+    }
+)
