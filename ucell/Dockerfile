@@ -14,6 +14,21 @@ RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/wh
 
 RUN pip install --no-cache-dir --ignore-requires-python git+https://github.com/jiyuuchc/ucell.git
 
+# Optional: build for CPUs without SSE4.2/AVX (e.g. old AMD Opterons).
+# pyarrow's wheels are compiled with an SSE4.2 baseline and SIGILL on import on
+# such CPUs, and so does anything that imports it (pandas, dask). The base image
+# advertises eager-only when the tensor server can't be imported, but that never
+# runs if the import itself kills the process, so the package is removed at build
+# time. Eager/pixels image data is unaffected. Build with: --build-arg NO_SSE42=1
+# See BUILD_NO_SSE42.md in ../cellpose.
+# NOTE: pyarrow is installed root-owned in /usr/local/lib; the base image runs as
+# the unprivileged `biopb` user, so the uninstall must switch to root or it fails
+# silently with PermissionError and pyarrow stays in the image.
+ARG NO_SSE42=0
+USER root
+RUN if [ "$NO_SSE42" = "1" ]; then pip uninstall -y pyarrow || true; fi
+USER biopb
+
 # Download model checkpoint
 RUN wget -q https://huggingface.co/jiyuuchc/ucell/resolve/main/ucell-1024.pt -O model.pt
 RUN wget -q https://huggingface.co/jiyuuchc/ucell/resolve/main/ucell-768.pt -O model_s.pt
