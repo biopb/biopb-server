@@ -63,5 +63,5 @@ test = [
     # >= 0.11.2. unifmir is still on the old API, whose tests need biopb < 0.11.1
     # (biopb.image.utils went private); they wait on its port.
     "biopb >= 0.11.2",
-    "biopb-image-base @ git+https://github.com/biopb/biopb.git@d38e184#subdirectory=biopb-image-runtime",
+    "biopb-image-base[stitch] @ git+https://github.com/biopb/biopb.git@d38e184#subdirectory=biopb-image-runtime",
 ]
