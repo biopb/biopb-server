@@ -1,4 +1,4 @@
-FROM jiyuuchc/biopb-image-base:ec58ca5
+FROM jiyuuchc/biopb-image-base:sha-d38e184
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends git \
@@ -22,4 +22,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD grpc_health_probe -addr=localhost:50051 || exit 1
 
 ENTRYPOINT ["python", "./cellpose_server.py"]
-CMD ["--no-token"]
+# Off loopback the server requires a token: $BIOPB_ALGORITHM_TOKEN, or one it
+# mints and prints. Bound to 127.0.0.1 (with --network host) it takes none.
+CMD ["--host", "0.0.0.0"]

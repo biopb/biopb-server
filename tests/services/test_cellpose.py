@@ -10,7 +10,7 @@ from google.protobuf import empty_pb2, json_format, struct_pb2
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 import biopb.image as proto
-from biopb.image.utils import deserialize_image_data, serialize_from_numpy_to_image_data
+from biopb.image import deserialize_image_data, serialize_from_numpy_to_image_data
 
 
 def _call(stub, image, dim_labels, **kwargs):

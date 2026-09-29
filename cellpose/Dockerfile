@@ -8,10 +8,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Optional: build for CPUs without SSE4.2/AVX (e.g. old AMD Opterons).
 # pyarrow's wheels are compiled with an SSE4.2 baseline and SIGILL on import on
-# such CPUs. It is only needed for the lazy/Flight (TensorFlightClient) data
-# path, which those CPUs cannot serve anyway. Removing it lets pandas/dask and
-# biopb fall back gracefully (biopb imports pyarrow lazily). Eager/pixels image
-# data is unaffected. Build with: --build-arg NO_SSE42=1
+# such CPUs, and so does anything that imports it (pandas, dask). The base image
+# advertises eager-only when the tensor server can't be imported, but that never
+# runs if the import itself kills the process, so the package is removed at build
+# time. Eager/pixels image data is unaffected. Build with: --build-arg NO_SSE42=1
+# See BUILD_NO_SSE42.md in this directory.
 # NOTE: pyarrow is installed root-owned in /usr/local/lib; the base image runs as
 # the unprivileged `biopb` user, so the uninstall must switch to root or it fails
 # silently with PermissionError and pyarrow stays in the image.

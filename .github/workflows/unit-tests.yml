@@ -1,9 +1,10 @@
 name: Unit Tests
 
 # Fast, GPU-free, container-free tests of the shared biopb_image_base logic that
-# every service builds on (parse_kwargs/validate_kwargs, image codec,
-# stitch/tiling reconciliation). The service integration tier needs pre-built
-# <service>:test images and a GPU, so it is not run here.
+# every service builds on (stitch/tiling reconciliation). The service integration tier needs pre-built
+# <service>:test images and a GPU, so it is not run here; only tests/unit is
+# collected, since the service modules import the SDK version their service
+# targets.
 
 on:
   # Push-triggered checks also surface on a branch's open PR (GitHub attaches
@@ -35,4 +36,4 @@ jobs:
         run: pip install -e ".[test]"
 
       - name: Run unit tier
-        run: pytest -m unit
+        run: pytest tests/unit -m unit
