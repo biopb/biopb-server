@@ -20,10 +20,7 @@ import pytest
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 import biopb.image as proto
-try:
-    from biopb.image import serialize_from_numpy_to_image_data
-except ImportError:  # biopb < 0.11.1, which the old-API services (lacss, unifmir) still need
-    from biopb.image.utils import serialize_from_numpy_to_image_data
+from biopb.image import serialize_from_numpy_to_image_data
 
 
 # Default gRPC options for large messages

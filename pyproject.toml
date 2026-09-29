@@ -55,13 +55,13 @@ test = [
     "typer",
     # Base utilities used by every *_server.py. Not in PyPI; installed from the
     # biopb/biopb monorepo subdirectory. Pin matches the base image tag in the
-    # service Dockerfiles (FROM jiyuuchc/biopb-image-base:ec58ca5) so the local
+    # service Dockerfiles (FROM jiyuuchc/biopb-image-base:sha-d38e184) so the local
     # module is identical to what runs inside the containers. NOTE: the package
     # subdirectory was renamed biopb-image-server/ -> biopb-image-runtime/ --
     # update the #subdirectory= if you bump to an older/newer commit.
-    # ec58ca5's image-base imports biopb.image.utils, which biopb >= 0.11.1 made
-    # private, and it requires plain `biopb`; cap it so the test env resolves the
-    # last SDK the old-API services (everything but cellpose) still run on.
-    "biopb < 0.11.1",
-    "biopb-image-base @ git+https://github.com/biopb/biopb.git@ec58ca5#subdirectory=biopb-image-runtime",
+    # The Ops protocol, which every ported service is tested through, needs biopb
+    # >= 0.11.2. unifmir is still on the old API, whose tests need biopb < 0.11.1
+    # (biopb.image.utils went private); they wait on its port.
+    "biopb >= 0.11.2",
+    "biopb-image-base @ git+https://github.com/biopb/biopb.git@d38e184#subdirectory=biopb-image-runtime",
 ]
