@@ -20,7 +20,10 @@ import pytest
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 import biopb.image as proto
-from biopb.image.utils import serialize_from_numpy_to_image_data
+try:
+    from biopb.image import serialize_from_numpy_to_image_data
+except ImportError:  # biopb < 0.11.1, which the old-API services (lacss, unifmir) still need
+    from biopb.image.utils import serialize_from_numpy_to_image_data
 
 
 # Default gRPC options for large messages
@@ -237,7 +240,13 @@ def cellpose_sam_service():
     Requires ~4GB GPU memory.
     Requires pre-built image: cellpose-sam:test
     """
-    service = DockerService("cellpose-sam")
+    # An Ops server takes no token on loopback, so the container shares the
+    # host's network and binds 127.0.0.1.
+    service = DockerService(
+        "cellpose-sam",
+        docker_args=["--network", "host"],
+        extra_args=["--host", "127.0.0.1", "--port", "50051"],
+    )
     if not service.image_exists():
         pytest.skip("Image cellpose-sam:test not found - build it first")
     if not service.start():
@@ -269,7 +278,13 @@ def samcell_service():
     Requires ~4GB GPU memory.
     Requires pre-built image: samcell:test
     """
-    service = DockerService("samcell")
+    # An Ops server takes no token on loopback, so the container shares the
+    # host's network and binds 127.0.0.1.
+    service = DockerService(
+        "samcell",
+        docker_args=["--network", "host"],
+        extra_args=["--host", "127.0.0.1", "--port", "50051"],
+    )
     if not service.image_exists():
         pytest.skip("Image samcell:test not found - build it first")
     if not service.start():
@@ -285,7 +300,13 @@ def ucell_service():
     Requires ~2GB GPU memory.
     Requires pre-built image: ucell:test
     """
-    service = DockerService("ucell")
+    # An Ops server takes no token on loopback, so the container shares the
+    # host's network and binds 127.0.0.1.
+    service = DockerService(
+        "ucell",
+        docker_args=["--network", "host"],
+        extra_args=["--host", "127.0.0.1", "--port", "50051"],
+    )
     if not service.image_exists():
         pytest.skip("Image ucell:test not found - build it first")
     if not service.start():
@@ -322,3 +343,39 @@ def cellpose_channel(cellpose_service):
 def cellpose_ops_stub(cellpose_service):
     """Get Ops stub for cellpose."""
     return proto.OpsStub(cellpose_service.channel())
+
+
+@pytest.fixture
+def ucell_channel(ucell_service):
+    """Get gRPC channel to ucell service."""
+    return ucell_service.channel()
+
+
+@pytest.fixture
+def ucell_ops_stub(ucell_service):
+    """Get Ops stub for ucell."""
+    return proto.OpsStub(ucell_service.channel())
+
+
+@pytest.fixture
+def cellpose_sam_channel(cellpose_sam_service):
+    """Get gRPC channel to cellpose-sam service."""
+    return cellpose_sam_service.channel()
+
+
+@pytest.fixture
+def cellpose_sam_ops_stub(cellpose_sam_service):
+    """Get Ops stub for cellpose-sam."""
+    return proto.OpsStub(cellpose_sam_service.channel())
+
+
+@pytest.fixture
+def samcell_channel(samcell_service):
+    """Get gRPC channel to samcell service."""
+    return samcell_service.channel()
+
+
+@pytest.fixture
+def samcell_ops_stub(samcell_service):
+    """Get Ops stub for samcell."""
+    return proto.OpsStub(samcell_service.channel())
