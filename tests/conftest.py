@@ -62,6 +62,10 @@ class DockerService:
     server takes no token. It is started on port 0, so the kernel picks a free
     port and no two services (or two test sessions) can collide; the port is
     read back from the line the server logs once it is bound.
+
+    The container gets the GPUs (``--gpus=all``) unless ``BIOPB_TEST_CPU`` is
+    set, for a machine without a GPU the image's torch supports. Inference on
+    the CPU is slow.
     """
 
     def __init__(self, service_name: str, extra_args: Optional[list] = None):
@@ -103,11 +107,12 @@ class DockerService:
             return False
 
         subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True)
+        gpu_args = [] if os.environ.get("BIOPB_TEST_CPU") else ["--gpus=all"]
         # Logs are read back with `docker logs`: a pipe nobody drains would
         # block the container once it filled.
         self._proc = subprocess.Popen(
             [
-                "docker", "run", "--rm", "--gpus=all", "--network", "host",
+                "docker", "run", "--rm", *gpu_args, "--network", "host",
                 "--name", self.container_name,
                 f"{self.service_name}:test",
                 "--host", "127.0.0.1", "--port", "0",
