@@ -59,5 +59,9 @@ test = [
     # module is identical to what runs inside the containers. NOTE: the package
     # subdirectory was renamed biopb-image-server/ -> biopb-image-runtime/ --
     # update the #subdirectory= if you bump to an older/newer commit.
+    # ec58ca5's image-base imports biopb.image.utils, which biopb >= 0.11.1 made
+    # private, and it requires plain `biopb`; cap it so the test env resolves the
+    # last SDK the old-API services (everything but cellpose) still run on.
+    "biopb < 0.11.1",
     "biopb-image-base @ git+https://github.com/biopb/biopb.git@ec58ca5#subdirectory=biopb-image-runtime",
 ]
