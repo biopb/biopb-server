@@ -34,6 +34,9 @@ docker run --gpus=all -p 50051:50051 -e BIOPB_ALGORITHM_TOKEN=<token> <image-nam
 
 Debug logging: add `-e BIOPB_LOG_LEVEL=DEBUG`.
 
+ucell runs its network on a fixed number of image patches at a time, 32 by default
+(about 3.5 GB of GPU memory). Change it with `-e UCELL_BATCH_SIZE=<n>`.
+
 Results too large for one message are returned through an embedded tensor server when
 the container is started with `--cache-dir <dir>` (and `--tensor-port`, default 8817,
 published).
