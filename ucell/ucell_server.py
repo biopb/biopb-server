@@ -3,12 +3,14 @@
 One op, ``ucell``. An image up to ``_WHOLE_IMAGE_MAX`` bytes is segmented whole.
 A larger image is read and segmented in overlapping tiles whose labels are
 stitched into one consistent label image (``biopb_image_base.stitch``); the
-input is never held whole.
+input is never held whole. Either way the network sees the image as patches,
+``$UCELL_BATCH_SIZE`` (default 32) at a time.
 
     python ucell_server.py --host 127.0.0.1 --port 50051 [--cache-dir DIR]
 """
 
 import logging
+import os
 import tempfile
 import threading
 from functools import lru_cache
@@ -33,6 +35,38 @@ _OVERLAP_MARGIN = 64
 
 _NITER = 500  # Integration steps for mask computation
 
+# Patches per forward pass, and always exactly this many: `patcherize` pads the
+# last batch with blank patches. The network is compiled, and a compiled network
+# is recompiled for every batch size it has not seen, so one size is what keeps
+# an image of a new shape from paying for that. It also bounds GPU memory, which
+# grows with the batch (about 3.5 GB at 32 for the large model): an image
+# "segmented whole" is not a bounded number of patches, and the 625 of a
+# 5530 x 5530 image in one batch asked for more than a 44 GB card has.
+#
+# Set at launch with $UCELL_BATCH_SIZE, because the right size is the GPU's and
+# not the image's: smaller for a small card or quicker small images (every call
+# costs at least one full batch), larger for throughput on big ones.
+_DEFAULT_BATCH_SIZE = 32
+
+
+def _batch_size_from_env() -> int:
+    """``$UCELL_BATCH_SIZE``, or the default when it is unset or empty."""
+    raw = os.environ.get("UCELL_BATCH_SIZE", "").strip()
+    if not raw:
+        return _DEFAULT_BATCH_SIZE
+    try:
+        size = int(raw)
+    except ValueError:
+        size = 0
+    if size < 1:
+        # At import, so a mistyped launch fails before it binds a port rather
+        # than on the first image someone sends.
+        raise SystemExit(f"UCELL_BATCH_SIZE must be a positive integer, got {raw!r}")
+    return size
+
+
+_BATCH_SIZE = _batch_size_from_env()
+
 # The network is not thread safe, and the server runs ops on a thread pool.
 _model_lock = threading.Lock()
 
@@ -56,7 +90,10 @@ def _model(small_model: bool):
     net = wrapper.inner.to(device)
     if device.type == "cuda":
         net = torch.compile(net)
-    logger.info("loaded %s model on %s", "small" if small_model else "large", device)
+    logger.info(
+        "loaded %s model on %s, batch size %d",
+        "small" if small_model else "large", device, _BATCH_SIZE,
+    )
     return net, wrapper.config, device
 
 
@@ -74,7 +111,7 @@ def _infer(img: np.ndarray, task_id: int, small_model: bool):
     from ucell.utils import patcherize
 
     net, config, device = _model(small_model)
-    predict = patcherize(net.predict, GS=config.image_size)
+    predict = patcherize(net.predict, GS=config.image_size, B=_BATCH_SIZE)
     with _model_lock, torch.device(device):
         output = predict(_format(img), task_id)
     # output is (H, W, 3): flow[:2], cell_prob[2]
